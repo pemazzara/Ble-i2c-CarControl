@@ -1,2 +1,2 @@
 # Ble-i2c-CarControl
-Se controlan los motores de un carro mediante un micro ESP32, que envía comandos a traves de una interfaz i2c a otro controlador, que podría ser un Arduino Uno, el cual maneja directamante los motores. A su vez el ESP32 se comunica por Bluetooth LE con una aplicación de celular. Comandos simples: "F" , "B" , "L" , "R" , "1" , "2" , "3", "A" 
+The motors of a car are controlled using an ESP32 micro, which sends commands through an i2c interface to another controller, which could be an Arduino Uno, which directly controls the motors. In turn, the ESP32 communicates via Bluetooth LE with a cell phone application. Simple commands: "F", "B", "L", "R", "1", "2", "3", "A"
