@@ -16,7 +16,6 @@ int speed = 150;
 //ServoControl servo; // Ya no se necesita, el servo se controla desde Arduino
 void processCommand(char cmd);
 void autonomousNavigation();
-unsigned long lastCommandTime = 0;
 const unsigned long SAFETY_TIMEOUT = 1500; // 1.5 segundos
 
 void setup() {
@@ -87,11 +86,11 @@ void processCommand(char command) {
       break;
     case 'L':
       Serial.println("EJECUTANDO: Izquierda");
-      motor.turnLeft();
+      motor.softTurnLeft();
       break;
     case 'R':
       Serial.println("EJECUTANDO: Derecha");
-      motor.turnRight();
+      motor.softTurnRight();
       break;
     case 'S':
       Serial.println("EJECUTANDO: Detener");

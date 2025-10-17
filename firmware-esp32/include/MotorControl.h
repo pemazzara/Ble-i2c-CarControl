@@ -21,6 +21,9 @@
 #define CMD_LEFT       0x03
 #define CMD_RIGHT      0x04
 #define CMD_SPEED      0x05
+// Agregar después de los comandos existentes
+#define CMD_SOFT_LEFT  0x06
+#define CMD_SOFT_RIGHT 0x07
 
 class MotorControl {
 public:
@@ -30,6 +33,8 @@ public:
   void stopMotor();
   void turnLeft();
   void turnRight();
+  void softTurnLeft();
+  void softTurnRight();
   void softStop(int delayTime);
   void rampSpeed(int targetSpeed, int rampTime);
   

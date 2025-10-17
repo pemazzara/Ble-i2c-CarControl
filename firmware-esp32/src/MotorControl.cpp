@@ -77,6 +77,16 @@ void MotorControl::turnRight() {
   Serial.println("Girando a la derecha");
 }
 
+void MotorControl::softTurnLeft() {
+  sendI2CCommand(CMD_SOFT_LEFT);
+  Serial.println("Giro suave a la izquierda");
+}
+
+void MotorControl::softTurnRight() {
+  sendI2CCommand(CMD_SOFT_RIGHT);
+  Serial.println("Giro suave a la derecha");
+}
+
 void MotorControl::softStop(int delayTime) {
   int initialSpeed = currentSpeed;
   int steps = 10;
