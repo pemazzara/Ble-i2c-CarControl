@@ -1,6 +1,5 @@
 #include "MotorControl.h"
 
-
 void MotorControl::begin() {
   // Inicializar I2C como maestro
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
