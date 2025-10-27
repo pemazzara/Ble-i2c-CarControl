@@ -50,6 +50,11 @@ void MotorController::handleCommand(byte command, byte data) {
             Serial.print("🔧 Velocidad auto configurada: ");
             Serial.println(autoSpeed);
             return;  // IMPORTANTE: return aquí también
+        case CMD_SET_SONAR_STATE:
+            sonarEnabled = (data > 0);
+            Serial.print("🔧 Sonar ");
+            Serial.println(sonarEnabled ? "HABILITADO" : "DESHABILITADO");
+        return;
     }
     
     // COMANDOS DE MOVIMIENTO (NO usar data)

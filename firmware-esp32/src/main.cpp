@@ -185,7 +185,18 @@ void loop() {
   if (currentState == STATE_READY) {
     sensors.readAll();
   }
-  
+  /* Solicitar datos del sonar periódicamente
+    static unsigned long lastSonarRequest = 0;
+    if (millis() - lastSonarRequest > 200) { // Cada 200ms
+        motor.requestSonarData();
+        lastSonarRequest = millis();
+        
+        // Usar datos del sonar para decisiones
+        int sonarDist = motor.getSonarDistance();
+        if (sonarDist > 0 && sonarDist < 100) {
+            Serial.printf("📡 Sonar detecta obstáculo: %dcm\n", sonarDist);
+        }
+    }*/
   // Procesar comandos BLE
   String command = ble.getLastCommand();
   if (command.length() > 0) {

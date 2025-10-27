@@ -4,30 +4,18 @@
 
 #include <Arduino.h>
 #include "Command.h" // Incluir comandos
-/*
-// Comandos con prioridades integradas
-enum Command {
-  // PRIORIDAD 1: Comandos de seguridad/emergencia
-  CMD_EMERGENCY_STOP = 0,
-  
-  // PRIORIDAD 2: Comandos manuales (desde BLE)
-  CMD_MANUAL_FORWARD = 1,
-  CMD_MANUAL_BACKWARD = 2,
-  CMD_MANUAL_LEFT = 3,
-  CMD_MANUAL_RIGHT = 4,
-  
-  // PRIORIDAD 3: Comandos autónomos (desde ESP32)
-  CMD_AUTO_FORWARD = 5,
-  CMD_AUTO_BACKWARD = 6,
-  CMD_AUTO_LEFT = 7,
-  CMD_AUTO_RIGHT = 8,
-  CMD_AUTO_NAVIGATE = 9,
-  
-  // PRIORIDAD 4: Configuración
-  CMD_SET_MANUAL_SPEED = 10,
-  CMD_SET_AUTO_SPEED = 11,
-  CMD_STOP = 12
-};*/
+
+// PINES L298N
+const int ENA = 9;   // PWM motor izquierdo
+const int IN1 = 7;   
+const int IN2 = 6;   
+const int ENB = 10;  // PWM motor derecho  
+const int IN3 = 5;   
+const int IN4 = 4;
+
+// Pines sonar (si lo usas)
+#define TRIG_PIN 8    
+#define ECHO_PIN 11  
 
 enum OperationMode {
   MODE_EMERGENCY_STOP,
@@ -42,6 +30,7 @@ private:
     int enA, in1, in2;  // Motor izquierdo
     int enB, in3, in4;  // Motor derecho
     // Estado del sistema
+    bool sonarEnabled = true;  // Por defecto activado
     OperationMode currentMode = MODE_MANUAL;
     bool emergencyStopActive = false;
     unsigned long lastCommandTime = 0;
@@ -64,6 +53,8 @@ public:
     void stop();
     // Getters de estado
     bool isInEmergency() { return emergencyStopActive; }
+    void setSonarState(bool enabled);
+    bool isSonarEnabled() { return sonarEnabled; }
     OperationMode getCurrentMode() { return currentMode; }
     
 private:
