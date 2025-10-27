@@ -1,3 +1,51 @@
+// MotorControl.h
+#ifndef MOTOR_CONTROL_H
+#define MOTOR_CONTROL_H
+
+#include <Arduino.h>
+#include <Wire.h>
+#define I2C_SDA_PIN 41
+#define I2C_SCL_PIN 42
+#define ARDUINO_ADDR 0x08
+
+
+class MotorControl {
+private:
+    //uint8_t i2cAddress;
+    int currentManualSpeed = 150; // Velocidad por defecto
+    
+public:
+    //MotorControl(uint8_t address);
+    void begin(); 
+    void sendI2CCommand(uint8_t command, uint8_t value = 0);
+    
+    // Comandos básicos de movimiento
+    void moveForward(int speed = 150);
+    void moveBackward(int speed = 150);
+    void turnLeft();
+    void turnRight();
+    void stopMotor();
+    
+    // Modos automáticos
+    void enableAutonomousMode();
+    void sendAutonomousCommand(byte command);
+    void enableObstacleAvoidance();
+    void enableWallFollowing();
+    void emergencyStop();
+    
+    // Configuración de parámetros
+    void setManualSpeed(int speed);
+    void setAvoidanceParameters(int minDistance, int speed, int turnSpeed);
+    void setWallFollowParameters(int speed, int idealDistance);
+    
+    // Funciones de giro suave (opcionales)
+    void softTurnLeft();
+    void softTurnRight();
+};
+
+#endif
+
+/*
 #ifndef MOTOR_CONTROL_H
 #define MOTOR_CONTROL_H
 
@@ -13,18 +61,8 @@
 #define CMD_SPEED_1    '1'
 #define CMD_SPEED_2    '2'
 #define CMD_SPEED_3    '3'
-
-// Comandos I2C
-#define CMD_STOP       0x00
-#define CMD_FORWARD    0x01
-#define CMD_BACKWARD   0x02
-#define CMD_LEFT       0x03
-#define CMD_RIGHT      0x04
-#define CMD_SPEED      0x05
-// Agregar después de los comandos existentes
-#define CMD_SOFT_LEFT  0x06
-#define CMD_SOFT_RIGHT 0x07
-
+*/
+/*
 class MotorControl {
 public:
   void begin();

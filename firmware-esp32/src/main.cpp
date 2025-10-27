@@ -1,56 +1,272 @@
-/*
-#include <Wire.h>
-#include <VL53L0X.h>
-
-
-#define I2C_PORT I2C_NUM_0
-
-
-#define SDA_PIN 8
-#define SCL_PIN 9
-
-VL53L0X sensor;
-
-void setup() {
-  Serial.begin(115200);
-  delay(2000);
-  Serial.println("🔍 Test VL53L0X individual");
-  
-  Wire.begin(SDA_PIN, SCL_PIN);
-  delay(1000);
-  
-  Serial.println("Inicializando sensor...");
-  if (sensor.init()) {
-    Serial.println("✅ Sensor inicializado");
-    sensor.setTimeout(500);
-    sensor.startContinuous();
-  } else {
-    Serial.println("❌ Falló inicialización");
-    return;
-  }
-}
-
-void loop() {
-  uint16_t distance = sensor.readRangeContinuousMillimeters();
-  if (sensor.timeoutOccurred()) {
-    Serial.println("⏰ Timeout");
-  } else {
-    Serial.printf("Distancia: %d mm\n", distance);
-  }
-  delay(100);
-}
-*/
 #include <Arduino.h>
-#include "ble/BluetoothLeConnect.h"
+#include "BluetoothLeConnect.h"
 #include "MotorControl.h"
 #include "SensorControl.h"
-//#include "config.h"
+#include "SensorFusion.h"  // ✅ INCLUIR ESTE HEADER
+#include "Command.h"
 
 #define BLE_DEVICE_NAME "CarRobot-ESP32-S3"
+
+
 // Instancias
 BluetoothLeConnect ble;
 MotorControl motor;
 SensorControl sensors;
+SensorFusion sensorFusion(sensors);  // ✅ CREAR INSTANCIA CORRECTAMENTE
+
+bool autonomousMode = false;
+unsigned long lastCommandTime = 0;
+int speed = 150;
+
+// Estados del sistema
+enum SystemState {
+  STATE_I, STATE_F, STATE_L, STATE_R, STATE_READY
+};
+
+SystemState currentState = STATE_I;
+const unsigned long SAFETY_TIMEOUT = 1500;
+
+// Prototipos de funciones
+void autonomousNavigation();
+void handleSystemState();
+void processStateCommand(char command);
+void processCommand(char command);
+
+void handleSystemState() {
+  switch(currentState) {
+    case STATE_I:
+      Serial.println("🔵 ESTADO I: Esperando 'F' para iniciar calibración");
+      break;
+    case STATE_F:
+      sensors.readSensor(0);
+      Serial.printf("🟡 ESTADO F: Frontal = %dmm - Esperando 'L'\n", sensors.frontDistance);
+      break;
+    case STATE_L:
+      sensors.readSensor(1);
+      Serial.printf("🟠 ESTADO L: Izquierdo = %dmm - Esperando 'R'\n", sensors.leftDistance);
+      break;
+    case STATE_R:
+      sensors.readSensor(2);
+      Serial.printf("🔴 ESTADO R: Derecho = %dmm - Esperando 'F'\n", sensors.rightDistance);
+      break;
+    case STATE_READY:
+      if (millis() % 5000 < 100) {
+        Serial.println("🟢 SISTEMA LISTO - Modo operacional");
+      }
+      break;
+  }
+}
+
+void processStateCommand(char command) {
+  switch(currentState) {
+    case STATE_I:
+      if (command == 'F') {
+        currentState = STATE_F;
+        Serial.println("🎯 Transición: I → F");
+      }
+      break;
+    case STATE_F:
+      if (command == 'L') {
+        currentState = STATE_L;
+        Serial.println("🎯 Transición: F → L");
+      }
+      break;
+    case STATE_L:
+      if (command == 'R') {
+        currentState = STATE_R;
+        Serial.println("🎯 Transición: L → R");
+      }
+      break;
+    case STATE_R:
+      if (command == 'F') {
+        currentState = STATE_READY;
+        Serial.println("🎯 Transición: R → READY");
+        Serial.println("🚗 ¡SISTEMA LISTO PARA OPERAR!");
+      }
+      break;
+    case STATE_READY:
+      break;
+  }
+}
+
+void processCommand(char command) {
+  processStateCommand(command);
+  
+  if (currentState != STATE_READY) {
+    Serial.println("⏳ Comando ignorado - Sistema en calibración");
+    return;
+  }
+  
+  autonomousMode = false;
+  
+  Serial.print("=== COMANDO RECIBIDO: '");
+  Serial.print(command);
+  Serial.println("' ===");
+  
+  switch(command) {
+    case 'F':
+      Serial.println("EJECUTANDO: Adelante");
+      motor.moveForward(speed);
+      break;
+    case 'B':
+      Serial.println("EJECUTANDO: Atrás");
+      motor.moveBackward(speed);
+      break;
+    case 'L':
+      Serial.println("EJECUTANDO: Izquierda");
+      motor.turnLeft();
+      break;
+    case 'R':
+      Serial.println("EJECUTANDO: Derecha");
+      motor.turnRight();
+      break;
+    case 'S':
+      Serial.println("EJECUTANDO: Detener");
+      motor.stopMotor();
+      break;
+    case '1': speed = 100; Serial.println("VELOCIDAD: 100"); break;
+    case '2': speed = 180; Serial.println("VELOCIDAD: 180"); break;
+    case '3': speed = 255; Serial.println("VELOCIDAD: 255"); break;
+    case 'A':
+      autonomousMode = true;
+      Serial.println("MODO: Autónomo activado");
+      break;
+    default:
+      Serial.print("ERROR: Comando no reconocido: ");
+      Serial.println(command);
+      break;
+  }
+  
+  Serial.println("=========================");
+}
+
+void autonomousNavigation() {
+  // ✅ AHORA sensorFusion ESTÁ DECLARADO
+  if (sensorFusion.shouldEmergencyStop()) {
+    Serial.println("🛑 PARADA DE EMERGENCIA AUTÓNOMA");
+    motor.emergencyStop();
+    return;
+  }
+  
+  byte command = sensorFusion.calculateBestCommand();
+  
+  // Enviar comando al Arduino
+  motor.sendAutonomousCommand(command);
+  
+  // Debug
+  sensors.readAll();
+  Serial.printf("🤖 DECISIÓN AUTÓNOMA: F:%d L:%d R:%d -> CMD:%d\n",
+                sensors.frontDistance, sensors.leftDistance, 
+                sensors.rightDistance, command);
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Inicializar componentes
+  motor.begin();
+  sensors.begin();
+  ble.begin(BLE_DEVICE_NAME);
+  
+  Serial.println("Sistema CarRobot con navegación autónoma inicializado");
+}
+
+void loop() {
+  ble.update();
+  
+  // Manejar estado del sistema
+  static unsigned long lastStatePrint = 0;
+  if (millis() - lastStatePrint > 2000) {
+    handleSystemState();
+    lastStatePrint = millis();
+  }
+  
+  // Leer sensores
+  if (currentState == STATE_READY) {
+    sensors.readAll();
+  }
+  
+  // Procesar comandos BLE
+  String command = ble.getLastCommand();
+  if (command.length() > 0) {
+    processCommand(command.charAt(0));
+    lastCommandTime = millis();
+    autonomousMode = (command.charAt(0) == 'A');
+  }
+  
+  // ✅ Navegación autónoma con sensorFusion declarado
+  if (currentState == STATE_READY && autonomousMode) {
+    autonomousNavigation();
+  }
+  // ✅ MODIFICADO: Enviar STOP solo una vez al timeout
+    static bool stopSent = false;
+    if (currentState == STATE_READY && 
+        millis() - lastCommandTime > SAFETY_TIMEOUT && 
+        !autonomousMode) {
+        if (!stopSent) {
+            motor.stopMotor();
+            Serial.println("⏰ Timeout - Enviando STOP");
+            stopSent = true;
+        }
+    } else {
+        stopSent = false; // Resetear cuando hay actividad
+    }
+  
+
+  
+  // Enviar datos via BLE
+  if (ble.isConnected() && currentState == STATE_READY) {
+    static unsigned long lastBLESend = 0;
+    if (millis() - lastBLESend > 1000) {
+      String sensorData = "F:" + String(sensors.frontDistance) +
+                       " L:" + String(sensors.leftDistance) +
+                       " R:" + String(sensors.rightDistance) +
+                       " M:" + (autonomousMode ? "AUTO" : "MANUAL");
+      ble.sendData(sensorData);
+      lastBLESend = millis();
+    }
+  }
+  
+  delay(50);
+}
+
+// Configurar velocidades
+void setManualSpeed(int speed) {
+    Wire.beginTransmission(ARDUINO_ADDR);
+    Wire.write(CMD_SET_MANUAL_SPEED);
+    Wire.write(speed);
+    Wire.endTransmission();
+}
+
+void setAvoidanceSpeed(int speed, int turnSpeed) {
+    Wire.beginTransmission(ARDUINO_ADDR);
+    Wire.write(CMD_SET_AVOIDANCE_PARAMS);
+    Wire.write(speed);
+    Wire.write(turnSpeed);
+    Wire.endTransmission();
+}
+/*
+#include <Arduino.h>
+#include "ble/BluetoothLeConnect.h"
+#include "MotorControl.h"
+#include "SensorControl.h"
+#include "Command.h"
+#include "SensorFusion.h"
+//#include "config.h"
+
+#define BLE_DEVICE_NAME "CarRobot-ESP32-S3"
+#define ARDUINO_I2C_ADDRESS 0x08
+#define CMD_MANUAL_FORWARD 1
+
+//TwoWire I2C_TOF = TwoWire(0);    // Bus 0 para sensores
+//TwoWire I2C_ARDUINO = TwoWire(1); // Bus 1 para Arduino
+// no funcionó, lo moví a SensorControl.cpp
+
+// Instancias
+BluetoothLeConnect ble;
+MotorControl motor(ARDUINO_I2C_ADDRESS); //, &I2C_ARDUINO);
+SensorControl sensors;
+SensorFusion sensorFusion(sensors);
 bool autonomousMode = false;
 unsigned long lastCommandTime = 0;
 int speed = 150;
@@ -132,13 +348,21 @@ void processStateCommand(char command) {
     case STATE_I:
       if (command == 'F') {
         currentState = STATE_F;
+        Wire.beginTransmission(0x08);
+        Wire.write(CMD_SET_MANUAL_SPEED);  // Comando 10
+        Wire.write(180);
+        Wire.endTransmission(); 
+        Wire.write(CMD_MANUAL_FORWARD);
         Serial.println("🎯 Transición: I → F (Test sensor frontal)");
       }
       break;
       
     case STATE_F:
       if (command == 'L') {
-        currentState = STATE_L; 
+        currentState = STATE_L;
+        Wire.beginTransmission(0x08);
+        Wire.write(CMD_MANUAL_FORWARD);    // Comando 1
+        Wire.endTransmission(); 
         Serial.println("🎯 Transición: F → L (Test sensor izquierdo)");
       }
       break;
@@ -230,13 +454,12 @@ void setup() {
   
   // Inicializar componentes
   motor.begin();
-  // Inicializar I2C
-  Wire.begin(I2C_SENSORES_SDA_PIN, I2C_SENSORES_SCL_PIN);
   delay(1000);
+  
   sensors.begin();
   // Ejecutar diagnóstico de sensores
   sensors.diagnoseSensors();
-  // Inicializar BLE
+  // InicializarBLE
   ble.begin(BLE_DEVICE_NAME);
   
   Serial.println("Sistema CarRobot con control I2C inicializado");
@@ -244,7 +467,7 @@ void setup() {
 
 void loop() {
   ble.update();
-  
+
   // Manejar el estado del sistema (muestra info cada 2 segundos)
   static unsigned long lastStatePrint = 0;
   if (millis() - lastStatePrint > 2000) {
@@ -261,22 +484,16 @@ void loop() {
   String command = ble.getLastCommand();
   if (command.length() > 0) {
     processCommand(command.charAt(0));
-    
-    if (currentState == STATE_READY) {
-      autonomousMode = false;
-      lastCommandTime = millis();
-    }
+    lastCommandTime = millis();
+    autonomousMode = (command.charAt(0) == 'A'); // Activar auto con 'A'
   }
   
-  // Navegación autónoma solo en estado READY
   if (currentState == STATE_READY && 
-      millis() - lastCommandTime > SAFETY_TIMEOUT) {
-    autonomousMode = true;
-  } 
-  
-  if (autonomousMode && currentState == STATE_READY) {
-    autonomousNavigationBasic();
-  } 
+        millis() - lastCommandTime > SAFETY_TIMEOUT && 
+        !autonomousMode) {
+        motor.stopMotor(); // Parar si no hay actividad
+    }
+
   
   // Enviar datos de sensores via BLE
   if (ble.isConnected() && currentState == STATE_READY) {
@@ -292,102 +509,38 @@ void loop() {
   
   delay(100);
 }
-
-
-
-
-
-void autonomousNavigationBasic() {
-  // Leer sensores reales
-  sensors.readAll();
-  sensors.printDistances();  // Debug
-  
-  // Lógica de navegación inteligente
-  uint16_t safeDistance = 300;  // 30cm mínimo seguro
-  uint16_t turnDistance = 200;  // 20cm para giro urgente
-  
-  Serial.println("🤖 MODO AUTÓNOMO ACTIVO");
-  
-  if (sensors.frontDistance > safeDistance) {
-    // Camino despejado adelante
-    if (sensors.leftDistance < turnDistance && sensors.rightDistance > safeDistance) {
-      motor.softTurnRight();
-      Serial.println("↪️ Esquivando obstáculo izquierdo");
+void autonomousNavigation() {
+    if (sensorFusion.shouldEmergencyStop()) {
+        Serial.println("🛑 PARADA DE EMERGENCIA AUTÓNOMA");
+        motor.emergencyStop();
+        return;
     }
-    else if (sensors.rightDistance < turnDistance && sensors.leftDistance > safeDistance) {
-      motor.softTurnLeft();
-      Serial.println("↩️ Esquivando obstáculo derecho");
-    }
-    else {
-      motor.moveForward(120);
-      Serial.println("🟢 Adelante - Camino despejado");
-    }
-  }
-  else {
-    // Obstáculo frontal - decidir mejor giro
-    if (sensors.leftDistance > sensors.rightDistance) {
-      motor.softTurnLeft();
-      Serial.println("🔄 Giro izquierda - Más espacio a la izquierda");
-      delay(800);
-    }
-    else {
-      motor.softTurnRight();
-      Serial.println("🔄 Giro derecha - Más espacio a la derecha");
-      delay(800);
-    }
-  }
+    
+    byte command = sensorFusion.calculateBestCommand();
+    
+    // Enviar comando al Arduino
+    motor.sendAutonomousCommand(command);
+    
+    // Debug de la decisión
+    sensors.readAll();
+    Serial.printf("🤖 DECISIÓN AUTÓNOMA: F:%d L:%d R:%d -> CMD:%d\n",
+                  sensors.frontDistance, sensors.leftDistance, 
+                  sensors.rightDistance, command);
 }
- /* 
-void processCommand(char command) {
-  autonomousMode = false;
-  
-  Serial.print("=== COMANDO RECIBIDO: '");
-  Serial.print(command);
-  Serial.println("' ===");
-  
-  switch(command) {
-    case 'F':
-      Serial.println("EJECUTANDO: Adelante");
-      motor.moveForward(speed);
-      break;
-    case 'B':
-      Serial.println("EJECUTANDO: Atrás");
-      motor.moveBackward(speed);
-      break;
-    case 'L':
-      Serial.println("EJECUTANDO: Izquierda");
-      motor.softTurnLeft();
-      break;
-    case 'R':
-      Serial.println("EJECUTANDO: Derecha");
-      motor.softTurnRight();
-      break;
-    case 'S':
-      Serial.println("EJECUTANDO: Detener");
-      motor.stopMotor();
-      break;
-    case '1':
-      speed = 100;
-      Serial.println("VELOCIDAD: 100");
-      break;
-    case '2':
-      speed = 180;
-      Serial.println("VELOCIDAD: 180");
-      break;
-    case '3':
-      speed = 255;
-      Serial.println("VELOCIDAD: 255");
-      break;
-    case 'A':
-      autonomousMode = true;
-      Serial.println("MODO: Autónomo");
-      break;
-    default:
-      Serial.print("ERROR: Comando no reconocido: ");
-      Serial.println(command);
-      break;
-  }
-  
-  Serial.println("=========================");
+
+// Configurar diferentes velocidades por modo
+void setAvoidanceSpeed(int speed, int turnSpeed) {
+    Wire.beginTransmission(8);
+    Wire.write(CMD_SET_AVOIDANCE_PARAMS);
+    Wire.write(speed);
+    Wire.write(turnSpeed);
+    Wire.endTransmission();
+}
+
+void setManualSpeed(int speed) {
+    Wire.beginTransmission(ARDUINO_I2C_ADDRESS);
+    Wire.write(CMD_SET_MANUAL_SPEED); // Cambiar por el comando correcto
+    Wire.write(speed);
+    Wire.endTransmission();
 }
 */

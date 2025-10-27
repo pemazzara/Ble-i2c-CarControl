@@ -1,4 +1,4 @@
-//#ifndef SENSOR_CONTROL_H
+#ifndef SENSOR_CONTROL_H
 #define SENSOR_CONTROL_H
 
 #include <Arduino.h>
@@ -10,12 +10,13 @@
 #define RIGHT_XSHUT_PIN  7
 
 // Pines I2C y sensores VL53L0X
-#define I2C_SENSORES_SDA_PIN 8
-#define I2C_SENSORES_SCL_PIN 9
+#define I2C_TOF_SDA 8
+#define I2C_TOF_SCL 9
 
 // Dirección por defecto (todos los sensores usan la misma)
 #define DEFAULT_ADDRESS  0x29
 #define I2C_PORT I2C_NUM_0
+
 
 class SensorControl {
 public:
@@ -38,3 +39,4 @@ private:
   
   TwoWire* i2cBus;
 };
+#endif

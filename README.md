@@ -1,2 +1,26 @@
 # Ble-i2c-CarControl
-The motors of a car are controlled using an ESP32 micro, which sends commands through an i2c interface to another controller, which could be an Arduino Uno, which directly controls the motors. In turn, the ESP32 communicates via Bluetooth LE with a cell phone application. Simple commands: "F", "B", "L", "R", "1", "2", "3", "A"
+# 🚗 CarRobot - Sistema de Control Autónomo
+
+Sistema robótico con control BLE, navegación autónoma y evasión de obstáculos.
+
+## ✨ Características
+
+- 🤖 **Navegación autónoma** con 3 sensores VL53L0X
+- 📱 **Control remoto** vía BLE desde celular
+- 🛡️ **Sistema de prioridades** (Emergencia > Manual > Auto > Seguridad)
+- 🎯 **Arquitectura distribuida** ESP32 (cerebro) + Arduino (ejecutor)
+- 🔊 **Comunicación I2C** entre microcontroladores
+
+## 🎮 Comandos BLE
+
+- `F` - Adelante
+- `B` - Atrás  
+- `L` - Izquierda
+- `R` - Derecha
+- `S` - Stop
+- `A` - Modo autónomo
+- `1/2/3` - Velocidades
+- `F,L,R` - Calibración de sensores
+
+## 🏗️ Arquitectura
+
