@@ -1,8 +1,10 @@
 #ifndef COMMAND_H
 #define COMMAND_H
 
+#define I2C_REQUEST_SONAR  0x20  // ESP32 solicita lectura sonar
+#define I2C_AUTO_COMMAND   0x21  // ESP32 envía comando autónomo
 // DEFINICIÓN ÚNICA de todos los comandos
-enum Command {
+enum Comandos {
   // PRIORIDAD 1: Comandos de seguridad/emergencia
   CMD_EMERGENCY_STOP = 0,
   // PRIORIDAD 2: Comandos manuales (desde BLE)

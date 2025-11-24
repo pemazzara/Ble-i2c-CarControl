@@ -6,9 +6,7 @@ void SensorControl::begin() {
   // Inicializar bus I2C para sensores VL53L0X
   i2cBus = &Wire1;
   i2cBus->begin(I2C_TOF_SDA, I2C_TOF_SCL);
-  // No funcionó
-  //TwoWire I2C_TOF = TwoWire(0);    // Bus 0 para sensores
-  //I2C_TOF.begin(I2C_TOF_SDA, I2C_TOF_SCL, 400000); // 400kHz para sensores
+
   
   // Configurar pines XSHUT
   pinMode(FRONT_XSHUT_PIN, OUTPUT);
@@ -32,13 +30,13 @@ void SensorControl::enableSensor(uint8_t sensorIndex) {
   disableAllSensors();
   
   switch(sensorIndex) {
-    case 0: // Frontal
+    case SENSOR_FRONT: // Frontal
       digitalWrite(FRONT_XSHUT_PIN, HIGH);
       break;
-    case 1: // Izquierdo
+    case SENSOR_LEFT: // Izquierdo
       digitalWrite(LEFT_XSHUT_PIN, HIGH);
       break;
-    case 2: // Derecho
+    case SENSOR_RIGHT: // Derecho
       digitalWrite(RIGHT_XSHUT_PIN, HIGH);
       break;
   }
@@ -51,12 +49,19 @@ void SensorControl::enableSensor(uint8_t sensorIndex) {
     Serial.printf("❌ Error iniciando sensor %d\n", sensorIndex);
     return;
   }
+  if(sensorIndex == SENSOR_FRONT) {
+      sensor.setAddress(FRONT_ADDRESS);
+  } else if(sensorIndex == SENSOR_LEFT) {
+      sensor.setAddress(LEFT_ADDRESS);
+  } else if(sensorIndex == SENSOR_RIGHT) {
+      sensor.setAddress(RIGHT_ADDRESS);
+  } 
   sensor.setAddress(DEFAULT_ADDRESS);
   sensor.setTimeout(500);
   sensor.startContinuous();
 }
 
-void SensorControl::readSensor(uint8_t sensorIndex) {
+uint16_t SensorControl::readSensor(uint8_t sensorIndex) {
   enableSensor(sensorIndex);
   delay(5);
   
@@ -73,18 +78,19 @@ void SensorControl::readSensor(uint8_t sensorIndex) {
     case 1: leftDistance = distance; break;
     case 2: rightDistance = distance; break;
   }
+  return distance;
 }
 
 
 void SensorControl::readAll() {
   // Leer cada sensor secuencialmente
-  readSensor(0); // Frontal
+  readSensor(SENSOR_FRONT); // Frontal
   delay(5); // Pequeña pausa entre lecturas
   
-  readSensor(1); // Izquierdo
+  readSensor(SENSOR_LEFT); // Izquierdo
   delay(5);
   
-  readSensor(2); // Derecho
+  readSensor(SENSOR_RIGHT); // Derecho
 }
 
 void SensorControl::printDistances() {
@@ -121,3 +127,5 @@ void SensorControl::diagnoseSensors() {
   }
   Serial.println("====================================\n");
 }
+
+

@@ -1,6 +1,6 @@
 #include "ServoControl.h"
 
-#define SERVO_PIN 14
+#define SERVO_PIN 20
 
 void ServoControl::begin() {
   // Permitir asignación de timers

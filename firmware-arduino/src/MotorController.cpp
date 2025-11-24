@@ -174,26 +174,26 @@ void MotorController::moveBackward(int speed) {
 
 void MotorController::turnLeft(int speed) {
     // Motor izquierdo: atrás (o parado para giro suave)
-    digitalWrite(in1, LOW);
-    digitalWrite(in2, HIGH);
-    analogWrite(enA, speed);
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, HIGH);
+    analogWrite(enB, speed);
     
     // Motor derecho: adelante
-    digitalWrite(in3, HIGH);
-    digitalWrite(in4, LOW);
-    analogWrite(enB, speed);
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+    analogWrite(enA, speed);
 }
 
 void MotorController::turnRight(int speed) {
     // Motor izquierdo: adelante
-    digitalWrite(in1, HIGH);
-    digitalWrite(in2, LOW);
-    analogWrite(enA, speed);
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+    analogWrite(enB, speed);
     
     // Motor derecho: atrás (o parado para giro suave)
-    digitalWrite(in3, LOW);
-    digitalWrite(in4, HIGH);
-    analogWrite(enB, speed);
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+    analogWrite(enA, speed);
 }
 
 void MotorController::stop() {

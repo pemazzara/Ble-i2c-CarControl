@@ -1,6 +1,9 @@
 #ifndef COMMAND_H
 #define COMMAND_H
 
+// Comandos I2C de Arduino a ESP32
+#define I2C_SONAR_UPDATE   0x10  // Arduino envía: [0x10, distance_high, distance_low]
+#define I2C_EMERGENCY_PING 0x11  // Arduino reporta emergencia
 // DEFINICIÓN ÚNICA de todos los comandos
 enum Command {
   // PRIORIDAD 1: Comandos de seguridad/emergencia

@@ -27,7 +27,16 @@ private:
     
 public:
     SensorFusion(SensorControl& sensorCtrl);
+    int scanLeftDetailed();
+    int scanRightDetailed(); 
+    int scanFrontDetailed();
+        // Escaneo con giro físico (si tu hardware lo permite)
+    int performPhysicalScan(int degrees);
     
+    // Getters para datos crudos
+    uint16_t getFrontDistance() const { return sensors->frontDistance; }
+    uint16_t getLeftDistance() const { return sensors->leftDistance; }
+    uint16_t getRightDistance() const { return sensors->rightDistance; }
     // Toma de decisiones
     byte calculateBestCommand();
     bool shouldEmergencyStop();

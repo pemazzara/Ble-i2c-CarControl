@@ -4,22 +4,9 @@
 #include "Command.h" // Incluir los nuevos comandos
 
 
-
 void MotorControl::begin() {
-    // Inicializar I2C como maestro
-    //i2cBus = &Wire;
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    delay(100);
-    
-    // Verificar conexión con Arduino
-    Wire.beginTransmission(ARDUINO_ADDR);
-    byte error = Wire.endTransmission();
-    
-    if (error == 0) {
-        Serial.println("Conexión I2C con Arduino establecida correctamente");
-    } else {
-        Serial.println("Error en conexión I2C con Arduino");
-    }
+
+    Serial.println("✅ MotorControl listo - Comandos via I2C maestro");
     
     // Inicializar motor detenido
     stopMotor();
@@ -29,14 +16,12 @@ void MotorControl::begin() {
 void MotorControl::sendI2CCommand(uint8_t command, uint8_t value) {
     Wire.beginTransmission(ARDUINO_ADDR);
     Wire.write(command);
+    byte error = Wire.endTransmission();
     
-    if (command == CMD_SET_MANUAL_SPEED) {
-        Wire.write(value);
+    if(error != 0) {
+        Serial.printf("⚠️  Error enviando comando %d a Arduino: %d\n", command, error);
     }
-    
-    Wire.endTransmission();
 }
-
 
 void MotorControl::moveForward(int speed) {
     // Primero configurar la velocidad si es diferente
@@ -118,21 +103,6 @@ void MotorControl::setSonarState(bool enabled) {
     Wire.write(enabled ? 1 : 0);
     Wire.endTransmission();
     sonarEnabled = enabled;
-}
-
-void MotorControl::requestSonarData() {
-    Wire.requestFrom(ARDUINO_ADDR, 4); // Solicitar 4 bytes
-    
-    if (Wire.available() >= 4) {
-        byte lowByte = Wire.read();
-        byte highByte = Wire.read();
-        lastSonarDistance = (highByte << 8) | lowByte;
-        // Los otros 2 bytes son mode y sonar state (opcional leerlos)
-    }
-}
-
-int MotorControl::getSonarDistance() {
-    return lastSonarDistance;
 }
 
 void MotorControl::enableAutonomousMode() {

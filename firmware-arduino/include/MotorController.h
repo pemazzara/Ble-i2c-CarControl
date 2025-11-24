@@ -14,8 +14,8 @@ const int IN3 = 5;
 const int IN4 = 4;
 
 // Pines sonar (si lo usas)
-#define TRIG_PIN 8    
-#define ECHO_PIN 11  
+//#define TRIG_PIN 8    
+//#define ECHO_PIN 11  
 
 enum OperationMode {
   MODE_EMERGENCY_STOP,
@@ -73,106 +73,3 @@ private:
 };
 
 #endif
-
-
-/*
-#ifndef MOTOR_CONTROLLER_H
-#define MOTOR_CONTROLLER_H
-
-#include <Arduino.h>
-
-enum Command {
-  CMD_STOP = 0,
-  CMD_FORWARD = 1,
-  CMD_BACKWARD = 2,
-  CMD_LEFT = 3,
-  CMD_RIGHT = 4,
-  CMD_OBSTACLE_AVOIDANCE = 5,
-  CMD_WALL_FOLLOWING = 6,
-  CMD_EMERGENCY_STOP = 7,
-  CMD_SET_AVOIDANCE_PARAMS = 8,
-  CMD_SET_WALL_FOLLOW_PARAMS = 9,
-  CMD_SET_MANUAL_SPEED = 10
-};
-
-enum OperationMode {
-  MODE_MANUAL,
-  MODE_OBSTACLE_AVOIDANCE,
-  MODE_WALL_FOLLOWING
-};
-
-class MotorController {
-private:
-private:
-    OperationMode currentMode = MODE_MANUAL;
-    bool emergencyStopActive = false;
-
-    // Parámetros de velocidad, viejos
-    int defaultSpeed = 150;
-    int avoidanceSpeed = 120;
-    int wallFollowSpeed = 100;
-    int turnSpeed = 180;
-    
-    // Agregar variables para pines de motor viejos
-    int motorLeft1, motorLeft2, motorRight1, motorRight2;
-    
-public:
-void handleCommand(byte command, byte data = 0);
-    void updateSafety(); // Verificación continua de seguridad
-    void emergencyStop();
-    bool isInEmergency() { return emergencyStopActive; }
-
-    // Constructor para inicializar pines viejo
-    MotorController(int ml1, int ml2, int mr1, int mr2) {
-        motorLeft1 = ml1;
-        motorLeft2 = ml2;
-        motorRight1 = mr1;
-        motorRight2 = mr2;
-    }
-    
-    void begin() {
-        pinMode(motorLeft1, OUTPUT);
-        pinMode(motorLeft2, OUTPUT);
-        pinMode(motorRight1, OUTPUT);
-        pinMode(motorRight2, OUTPUT);
-    }
-    
-    void setAvoidanceParams(int speed, int turnSpd) {
-        avoidanceSpeed = speed;
-        turnSpeed = turnSpd;
-    }
-    
-    void setManualParams(int speed) {
-        defaultSpeed = speed;
-    }
-    
-    void setWallFollowParams(int speed) {
-        wallFollowSpeed = speed;
-    }
-    
-    void moveForward(OperationMode mode) {
-        switch(mode) {
-            case MODE_OBSTACLE_AVOIDANCE:
-                analogWrite(motorLeft1, avoidanceSpeed);
-                analogWrite(motorRight1, avoidanceSpeed);
-                break;
-            case MODE_WALL_FOLLOWING:
-                analogWrite(motorLeft1, wallFollowSpeed);
-                analogWrite(motorRight1, wallFollowSpeed);
-                break;
-            default:
-                analogWrite(motorLeft1, defaultSpeed);
-                analogWrite(motorRight1, defaultSpeed);
-        }
-    }
-    
-    void stop() {
-        analogWrite(motorLeft1, 0);
-        analogWrite(motorLeft2, 0);
-        analogWrite(motorRight1, 0);
-        analogWrite(motorRight2, 0);
-    }
-};
-
-#endif
-*/
