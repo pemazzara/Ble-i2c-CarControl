@@ -4,9 +4,8 @@
 void SensorControl::begin() {
   Serial.println("Inicializando sensores VL53L0X con multiplexación XSHUT...");
   // Inicializar bus I2C para sensores VL53L0X
-  i2cBus = &Wire1;
-  i2cBus->begin(I2C_TOF_SDA, I2C_TOF_SCL);
-
+    i2cBus = &Wire1;
+    i2cBus->begin(I2C_TOF_SDA, I2C_TOF_SCL);
   
   // Configurar pines XSHUT
   pinMode(FRONT_XSHUT_PIN, OUTPUT);

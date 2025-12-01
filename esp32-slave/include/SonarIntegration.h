@@ -5,8 +5,8 @@
 #include <Wire.h>
 
 // Pines Sonar (HC-SR04)
-#define SONAR_TRIG 37
-#define SONAR_ECHO 38
+#define SONAR_TRIG 38
+#define SONAR_ECHO 37
 
 
 class SonarIntegration {

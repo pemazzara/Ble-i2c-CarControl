@@ -12,7 +12,7 @@
 #define CMD_BACKWARD   'B'
 #define CMD_LEFT       'L'
 #define CMD_RIGHT      'R'
-#define CMD_STOP       'S'
+#define CMD_STOP        'S'
 #define CMD_SPEED_1    '1'
 #define CMD_SPEED_2    '2'
 #define CMD_SPEED_3    '3'

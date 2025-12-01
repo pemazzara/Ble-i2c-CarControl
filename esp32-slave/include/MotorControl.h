@@ -47,6 +47,7 @@ definiciones.*/
 
 #include <Arduino.h>
 #include <Wire.h>
+#include "Command.h"
 
 // Pines L298N
 const int ENA = 13;   // PWM motor izquierdo
@@ -56,23 +57,18 @@ const int ENB = 14;   // PWM motor derecho
 const int IN3 = 11;   
 const int IN4 = 12;
 
+// Configuración PWM
+#define MOTOR_PWM_FREQ      5000  // 5 kHz de frecuencia
+#define MOTOR_PWM_RES       10    // 10 bits de resolución (0-1023)
+#define MAX_DUTY_CYCLE      1023  // 2^10 - 1 = 1023
 
-#define CMD_SPEED_1    '1'
-#define CMD_SPEED_2    '2'
-#define CMD_SPEED_3    '3'
+// Canales LEDC - Deben ser únicos y usar el rango 0-7 para Arduino.
+#define LEDC_CH_A           0     // Canal 0 para Motor Izquierdo
+#define LEDC_CH_B           1     // Canal 1 para Motor Derecho
 
-// Comandos I2C
-// Comandos (Inferencia basada en el código Master)
-#define CMD_EMERGENCY_STOP      0x00
-#define CMD_MANUAL_FORWARD      0x01
-#define CMD_MANUAL_BACKWARD     0x02
-#define CMD_MANUAL_LEFT         0x03
-#define CMD_MANUAL_RIGHT        0x04
-#define CMD_STOP                0x05
-// Comandos de configuración
-#define CMD_SET_MANUAL_SPEED    0x10
-#define CMD_SET_AUTO_SPEED      0x11
-#define CMD_SET_SONAR_STATE     0x12
+
+
+
 
 
 // =========================================================
@@ -106,6 +102,7 @@ public:
     void begin(); 
     void handleCommand(byte command, byte data = 0);
     void emergencyStop();
+    void resetEmergency();
     void stop();
     void updateSafety();
     uint8_t getMotorStatus();

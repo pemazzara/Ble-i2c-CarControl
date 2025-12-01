@@ -3,6 +3,10 @@
 
 #define I2C_REQUEST_SONAR  0x20  // ESP32 solicita lectura sonar
 #define I2C_AUTO_COMMAND   0x21  // ESP32 envía comando autónomo
+#define CMD_SPEED_1    '1'
+#define CMD_SPEED_2    '2'
+#define CMD_SPEED_3    '3'
+
 // DEFINICIÓN ÚNICA de todos los comandos
 enum Comandos {
   // PRIORIDAD 1: Comandos de seguridad/emergencia
@@ -29,7 +33,8 @@ enum Comandos {
   CMD_SET_WALL_FOLLOW_PARAMS = 15,
   CMD_OBSTACLE_AVOIDANCE = 16,
   CMD_WALL_FOLLOWING = 17,
-  CMD_SET_AVOIDANCE_PARAMS = 18
+  CMD_SET_AVOIDANCE_PARAMS = 18,
+  CMD_READ_SENSORS = 19
 };
 
 #endif

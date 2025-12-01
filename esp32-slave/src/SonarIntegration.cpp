@@ -43,23 +43,7 @@ uint16_t SonarIntegration::readDistance() {
     uint16_t distance = (duration * 0.34) / 2;
     return (distance > 1200) ? 1200 : distance;
 }
-/*
-uint16_t SonarIntegration::readDistance() {
-    digitalWrite(SONAR_TRIG, LOW);
-    delayMicroseconds(2);
-    digitalWrite(SONAR_TRIG, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(SONAR_TRIG, LOW);
-    
-    // Timeout max 30ms para evitar bloqueo
-    long duration = pulseIn(SONAR_ECHO, HIGH, 30000); 
-    // Conversión a mm (velocidad del sonido 340m/s = 0.34mm/us)
-    uint16_t distance = (duration > 0) ? (duration * 0.34) / 2 : 1200;
-    
-    if (distance > 1200) distance = 1200;
-    return distance;
-}
-*/
+
 uint16_t SonarIntegration::updateAndGetDistance() {
     return readDistance();
 }

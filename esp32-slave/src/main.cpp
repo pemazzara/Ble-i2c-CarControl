@@ -8,14 +8,23 @@
 // =========================================================
 // DEFINICIONES DE HARDWARE Y COMANDOS (Consolidado de Arduino)
 // =========================================================
+#define USE_SPI_SLAVE
 
-// Pines I2C (Se usarán los pines I2C por defecto o se definen aquí)
-// En el modo Slave, solo se necesitan las líneas SDA y SCL para Wire.begin(address).
-// Usaremos los pines por defecto del ESP32 si no se especifican otros.
-#define SLAVE_ADDR 0x04 // The I2C address of this slave device // Dirección I2C fija (0x08)
-#define I2C_SDA_PIN 41
-#define I2C_SCL_PIN 42
-TwoWire I2CSlave = TwoWire(0);
+#ifdef USE_SPI_SLAVE
+    #include "SPISlave.h"
+    #define SPI_CLK  39   
+    #define SPI_MISO 40     
+    #define SPI_MOSI 41   
+    #define SPI_SS   42
+#else    
+    // Pines I2C (Se usarán los pines I2C por defecto o se definen aquí)
+    // En el modo Slave, solo se necesitan las líneas SDA y SCL para Wire.begin(address).
+    // Usaremos los pines por defecto del ESP32 si no se especifican otros.
+    #define SLAVE_ADDR 0x04 // The I2C address of this slave device // Dirección I2C fija (0x08)
+    #define I2C_SDA_PIN 41
+    #define I2C_SCL_PIN 42
+    TwoWire I2CSlave = TwoWire(0);
+#endif
 // =========================================================
 // ESTRUCTURAS DE DATOS Y PRITIMIVAS FREERTOS
 // =========================================================
@@ -35,10 +44,8 @@ struct MotorCommand {
 // Mutex para proteger la estructura de datos que se comparte entre la Tarea Sensor 
 // (escritura) y el handler I2C (lectura).
 SemaphoreHandle_t xSensorDataMutex;
-
 // Cola para enviar comandos I2C desde el handler I2C (ISR) a la Tarea Motor
 QueueHandle_t xMotorCommandQueue;
-
 // Instancia global para los datos de sensores
 SharedSensorData g_sensorData = {0, false};
 MotorControl motorController;
@@ -47,7 +54,7 @@ SonarIntegration sonar;
 // =========================================================
 // HANDLERS I2C (Rutinas de interrupción)
 // =========================================================
-
+#ifndef USE_SPI_SLAVE
 // El Master solicita datos
 void handleI2CRequest() {
     SharedSensorData temp;
@@ -60,7 +67,7 @@ void handleI2CRequest() {
         // En caso de fallo (no debería ocurrir), enviar 0
         temp = {0, false};
     }
-    /* Preparar respuesta
+    // Preparar respuesta
     uint8_t response[4];
     response[0] = highByte(temp.sonarDistance);
     response[1] = lowByte(temp.sonarDistance);
@@ -68,12 +75,12 @@ void handleI2CRequest() {
     response[3] = motorController.getMotorStatus(); // Nuevo: estado motores
     
     I2CSlave.write(response, 4);
-    */
-    // El Máster espera 3 bytes: Distancia Alta, Distancia Baja, Bandera
+    
+    /* El Máster espera 3 bytes: Distancia Alta, Distancia Baja, Bandera
     I2CSlave.write(highByte(temp.sonarDistance));
     I2CSlave.write(lowByte(temp.sonarDistance));
     I2CSlave.write(temp.emergencyFlag ? 1 : 0);
-
+    */
     // No se hace Serial.print en ISR
 }
 
@@ -98,7 +105,7 @@ void handleI2CReceive(int byteCount) {
     // Descartar bytes sobrantes
     while(I2CSlave.available()) I2CSlave.read();
 }
-
+#endif
 // =========================================================
 // TAREAS FREERTOS
 // =========================================================
@@ -168,12 +175,23 @@ void sensorTask(void *pvParameters) {
 
 void setup() {
     Serial.begin(115200);
-    
+#ifdef USE_SPI_SLAVE
+    // Task en Core 1 para máxima velocidad sin interrumpir WiFi/BLE (si usaras)
+    xTaskCreatePinnedToCore(
+        spiSlaveTask,
+        "SPI_Slave",
+        8192, // Un poco más de stack por si acaso
+        NULL,
+        10,   // Prioridad muy alta (FreeRTOS max suele ser 24 o 25)
+        NULL,
+        1     // Core 1
+    );
+#else
     // Inicializar I2C como SLAVE (¡CRUCIAL!)
     I2CSlave.begin(SLAVE_ADDR, I2C_SDA_PIN, I2C_SCL_PIN, 400000); // 400kHz
     I2CSlave.onRequest(handleI2CRequest);
     I2CSlave.onReceive(handleI2CReceive);
-
+#endif
     // Crear primitivas de FreeRTOS
     xSensorDataMutex = xSemaphoreCreateMutex();
     // Cola de comandos con capacidad para 5 comandos en espera
@@ -201,7 +219,9 @@ void setup() {
     );
     
     Serial.println("✅ ESP32 SLAVE (Actuador) FreeRTOS Iniciado.");
+#ifndef USE_SPI_SLAVE
     Serial.printf("   - I2C Slave Address: 0x%X\n", SLAVE_ADDR);
+#endif
     Serial.println("   - Esperando comandos y solicitudes de datos del ESP32 Master.");
 }
 

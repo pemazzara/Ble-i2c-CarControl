@@ -1,22 +1,49 @@
 // main.cpp - ESP32 con FreeRTOS
 #include <Arduino.h>
-#include <Wire.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "BluetoothLeConnect.h"
 #include "SensorControl.h"
 #include "Command.h"
+#include "esp_task_wdt.h"
 
 // Prioridades de tasks (mayor número = mayor prioridad)
 #define TASK_PRIORITY_SAFETY    4  // Máxima prioridad - emergencias
 #define TASK_PRIORITY_I2C       3  // Comunicación I2C  
 #define TASK_PRIORITY_NAV       2  // Navegación
 #define TASK_PRIORITY_BLE       1  // Comunicación BLE
-// Definición pines I2C ESP32 con Arduino
-#define I2C_SDA_PIN 41
-#define I2C_SCL_PIN 42
-#define SLAVE_ADDR 0x04
+
+#define USE_SPI_MASTER
+
+#ifdef USE_SPI_MASTER
+    #include "SPIMaster.h"
+    /*
+ESP32-S3 MASTER          ESP32-S3 SLAVE
+GPIO 41 (MOSI) ------- GPIO 41 (MOSI)
+GPIO 40 (MISO) ------- GPIO 40 (MISO)  
+GPIO 39 (SCLK) ------- GPIO 39 (SCLK)
+GPIO 42 (CS)   ------- GPIO 42 (CS)
+      GND      -------      GND
+      */
+    #define SPI_CLK  39   
+    #define SPI_MISO 40     
+    #define SPI_MOSI 41   
+    #define SPI_SS   42
+#else
+    #include <Wire.h>
+    // Definición pines I2C ESP32 Master
+    #define I2C_SDA_PIN 41
+    #define I2C_SCL_PIN 42
+    #define SLAVE_ADDR 0x04
+    TwoWire I2CMaster = TwoWire(0);
+#endif
+// Prioridades
+#define TASK_PRIORITY_SAFETY    4
+#define TASK_PRIORITY_COMM      3
+#define TASK_PRIORITY_NAV       2  
+#define TASK_PRIORITY_BLE       1
+// Estados del sistema de navegación
 enum SystemState {
  STATE_I,   // Estado inicial de espera
  STATE_F,   // Escaneo Frontal (se espera comando 'L')
@@ -29,13 +56,30 @@ SystemState currentState = STATE_I;
 
 // Handles globales de FreeRTOS
 TaskHandle_t xSafetyTaskHandle = NULL;
+#ifndef USE_I2C_MASTER
+TaskHandle_t xSPITaskHandle = NULL;
+#else
 TaskHandle_t xI2CTaskHandle = NULL;
+#endif
 TaskHandle_t xNavigationTaskHandle = NULL;
 TaskHandle_t xBLETaskHandle = NULL;
 
 QueueHandle_t xSensorQueue;
 QueueHandle_t xCommandQueue;
-TwoWire I2CMaster = TwoWire(0);
+
+// ✅ DECLARAR TODAS LAS TASKS
+void safetyTask(void *pvParameters);
+void navigationTask(void *pvParameters);
+void bleTask(void *pvParameters);
+#ifdef USE_SPI_MASTER
+    void spiMasterTask(void *pvParameters);
+#else
+    void i2cTask(void *pvParameters);
+#endif
+
+void handleSystemState();
+void processStateCommand(char command);
+void checkJTAGPins();
 
 // Estructuras de datos para comunicación entre tasks
 struct SensorData {
@@ -58,6 +102,79 @@ SensorData dataSensors;
 bool autonomousMode = false;
 void handleSystemState();
 void processStateCommand(char command);
+
+// ✅ SETUP FREERTOS SIMPLIFICADO
+void setupFreeRTOS() {
+    Serial.println("🔧 Inicializando FreeRTOS...");
+    
+    // Crear colas
+    xSensorQueue = xQueueCreate(1, sizeof(SensorData));
+    xCommandQueue = xQueueCreate(10, sizeof(Command));
+    
+    if (xSensorQueue == NULL || xCommandQueue == NULL) {
+        Serial.println("❌ ERROR: No se pudieron crear las colas");
+        return;
+    }
+
+    // Crear tasks
+#ifndef USE_SPI_MASTER
+    Serial.println("   Creando task I2C...");
+    xTaskCreatePinnedToCore(
+        i2cTask,
+        "I2C_Master", 
+        4096,
+        NULL,
+        TASK_PRIORITY_COMM,
+        &xI2CTaskHandle,
+        1
+    );
+#else
+    Serial.println("   Creando task SPI...");
+    xTaskCreatePinnedToCore(
+        spiMasterTask,
+        "SPI_Master", 
+        8192,  // ✅ Aumentar stack para SPI
+        NULL,   // ✅ Sin parámetros complejos
+        TASK_PRIORITY_COMM,
+        &xSPITaskHandle,
+        1
+    );
+#endif
+
+    // Tasks comunes
+    xTaskCreatePinnedToCore(
+        safetyTask,
+        "Safety",
+        4096,
+        NULL,
+        TASK_PRIORITY_SAFETY,
+        &xSafetyTaskHandle,
+        1
+    );
+    
+    xTaskCreatePinnedToCore(
+        navigationTask,
+        "Navigation",
+        4096, 
+        NULL,
+        TASK_PRIORITY_NAV,
+        &xNavigationTaskHandle,
+        1
+    );
+    
+    xTaskCreatePinnedToCore(
+        bleTask,
+        "BLE",
+        4096,
+        NULL,
+        TASK_PRIORITY_BLE,
+        &xBLETaskHandle,
+        0
+    );
+    
+    Serial.println("✅ FreeRTOS inicializado");
+}
+
 
 void handleSystemState() {
 
@@ -130,6 +247,8 @@ void processStateCommand(char command) {
 
 
 // 📡 TASK DE I2C (Servidor I2C - Único que accede al bus I2C)
+// ✅ TASK I2C (solo si no usamos SPI)
+#ifndef USE_SPI_MASTER
 void i2cTask(void *pvParameters) {
     Serial.println("📡 I2C Task (Servidor) iniciada");
     
@@ -170,17 +289,20 @@ void i2cTask(void *pvParameters) {
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
+#endif
 
 // 🚨 TASK DE SEGURIDAD (Máxima Prioridad)
 void safetyTask(void *pvParameters) {
     Serial.println("🛡️  Safety Task iniciada");
     
     SensorData sensorData;
-    
+    bool lastEmergencyState = false;
+
     for(;;) {
         // Revisar cola de sensores continuamente (sin remover los datos)
         if(xQueuePeek(xSensorQueue, &sensorData, 0) == pdTRUE) {
-            if(sensorData.emergency) {
+            // ✅ Solo actuar si el estado de emergencia CAMBIA
+            if(sensorData.emergency && !lastEmergencyState) {
                 Serial.println("🚨 EMERGENCY DETECTADA - Parada inmediata");
                 
                 // Enviar comando de emergencia a la cola de comandos
@@ -189,6 +311,12 @@ void safetyTask(void *pvParameters) {
                 
                 // Notificar a otras tasks
                 autonomousMode = false;
+                lastEmergencyState = true;
+            }
+            // ✅ Resetear cuando la emergencia termina
+            else if (!sensorData.emergency && lastEmergencyState) {
+                Serial.println("✅ EMERGENCY RESUELTA");
+                lastEmergencyState = false;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(50)); // Revisar cada 50ms
@@ -300,23 +428,48 @@ void bleTask(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100)); // Ejecutar cada 100ms
     }
 }
-
+void printResetReason() {
+    esp_reset_reason_t reason = esp_reset_reason();
+    Serial.printf("🔄 Reset Reason: ");
+    switch(reason) {
+        case ESP_RST_POWERON: Serial.println("Power On"); break;
+        case ESP_RST_EXT: Serial.println("External Reset"); break;
+        case ESP_RST_SW: Serial.println("Software Reset"); break;
+        case ESP_RST_PANIC: Serial.println("Exception/Panic"); break;
+        case ESP_RST_INT_WDT: Serial.println("Interrupt Watchdog"); break;
+        case ESP_RST_TASK_WDT: Serial.println("Task Watchdog"); break;
+        case ESP_RST_WDT: Serial.println("Other Watchdog"); break;
+        case ESP_RST_DEEPSLEEP: Serial.println("Deep Sleep"); break;
+        case ESP_RST_BROWNOUT: Serial.println("Brownout"); break;
+        case ESP_RST_SDIO: Serial.println("SDIO Reset"); break;
+        default: Serial.println("Unknown"); break;
+    }
+}
 // 🏁 SETUP - Inicialización
 void setup() {
     Serial.begin(115200);
-    
+    delay(1000); // Esperar a que Serial esté listo
+     printResetReason();
+#ifdef USE_SPI_MASTER
+    Serial.println("   Modo: SPI (Alta Velocidad)");
+    //esp_task_wdt_init(30, false); // 30 segundos
+    checkJTAGPins();
+#else
+    Serial.println("   Modo: I2C (Compatible)");
     // Inicializar hardware (código Arduino tradicional)
     I2CMaster.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000); // SDA, SCL, 400kHz
     I2CMaster.beginTransmission(SLAVE_ADDR);
     I2CMaster.printf("Iniciando comunicación con esclavo I2C en dirección 0x%02X\n", SLAVE_ADDR);
     uint8_t error = I2CMaster.endTransmission(true);
     Serial.printf("Resultado de conexión I2C: %d (0=OK)\n", error);
+#endif
     sensors.begin();
     ble.begin("CarRobot-FreeRTOS");
-    
+    // Configurar FreeRTOS
+    setupFreeRTOS();
     // Crear recursos de FreeRTOS
-    xSensorQueue = xQueueCreate(1, sizeof(SensorData)); // Solo necesita el último dato
-    xCommandQueue = xQueueCreate(10, sizeof(Command));
+    //xSensorQueue = xQueueCreate(1, sizeof(SensorData)); // Solo necesita el último dato
+    //xCommandQueue = xQueueCreate(10, sizeof(Command));
     
     // ✅ ELIMINAR SEMÁFORO I2C - ya no es necesario con patrón servidor
     // xI2CSemaphore = xSemaphoreCreateMutex(); // ← COMENTADO/ELIMINADO
@@ -325,7 +478,7 @@ void setup() {
     // BLE en Core 0 (donde corre el stack BLE)
     // Crear tasks de FreeRTOS
 
-    // BLE Task en Core 0 (por el stack BLE)
+    /* BLE Task en Core 0 (por el stack BLE)
     xTaskCreatePinnedToCore(
         bleTask,
         "BLE",
@@ -366,11 +519,35 @@ void setup() {
         &xNavigationTaskHandle,
         1 // Core 1
     );
-    
+    */
     Serial.println("🚗 Sistema FreeRTOS iniciado - Tasks ejecutándose");
     Serial.println("   Core 0: BLE");
     Serial.println("   Core 1: Safety, I2C, Navigation");
+#ifndef USE_SPI_MASTER
     Serial.println("   ✅ Sin semáforos I2C - Patrón Servidor activo");
+#endif
+}
+
+// ✅ VERIFICACIÓN PINES JTAG
+void checkJTAGPins() {
+#ifdef USE_SPI_MASTER
+    Serial.println("🔍 Verificando pines JTAG...");
+    
+    gpio_config_t pin_cfg = {};
+    pin_cfg.pin_bit_mask = (1ULL << 39) | (1ULL << 40) | (1ULL << 41) | (1ULL << 42);
+    pin_cfg.mode = GPIO_MODE_INPUT;
+    pin_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+    pin_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    pin_cfg.intr_type = GPIO_INTR_DISABLE;
+    
+    esp_err_t ret = gpio_config(&pin_cfg);
+    
+    if (ret == ESP_OK) {
+        Serial.println("✅ Pines JTAG disponibles para SPI");
+    } else {
+        Serial.printf("❌ Error pines JTAG: 0x%x\n", ret);
+    }
+#endif
 }
 
 // 🔁 LOOP principal (en Core 1) - Puede usarse para tareas de baja prioridad
@@ -392,5 +569,5 @@ void loop() {
         lastStatus = millis();
     }
     
-    delay(1000);
+    vTaskDelay(pdMS_TO_TICKS(100)); // Esperar 100ms sin bloquear el Core 1
 }

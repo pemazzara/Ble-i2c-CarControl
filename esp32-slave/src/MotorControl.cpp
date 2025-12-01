@@ -1,5 +1,6 @@
 // Esp32Slave - MotorControl.cpp
 #include "MotorControl.h"
+#include <cmath> // Para abs()
 
 MotorControl::MotorControl() {}
 
@@ -10,6 +11,17 @@ void MotorControl::begin() {
     pinMode(ENB, OUTPUT);
     pinMode(IN3, OUTPUT);
     pinMode(IN4, OUTPUT);
+
+    // 2. Configuración de CANALES LEDC (PWM nativo)
+    
+    // Canal A (Izquierdo)
+    ledcSetup(LEDC_CH_A, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+    ledcAttachPin(ENA, LEDC_CH_A); 
+
+    // Canal B (Derecho)
+    ledcSetup(LEDC_CH_B, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+    ledcAttachPin(ENB, LEDC_CH_B);
+
     stop();
     resetSafetyTimer();
     Serial.println("🚗 MotorControl inicializado.");
@@ -20,7 +32,7 @@ void MotorControl::handleCommand(byte command, byte data) {
     
     // PRIORIDAD 1: EMERGENCY STOP
     if (command == CMD_EMERGENCY_STOP) {
-        emergencyStop();
+        emergencyStop(); // Activa la bandera y para motores
         return;
     }
     
@@ -30,7 +42,7 @@ void MotorControl::handleCommand(byte command, byte data) {
     }
 
     if (command == CMD_STOP) {
-        if (emergencyStopActive) emergencyStopActive = false;
+        if (emergencyStopActive) emergencyStopActive = false; // ¡AQUÍ SE RESETEA LA BANDERA!
         stop();
         Serial.println("🛑 Comando STOP recibido y emergencia reseteada.");
         return;
@@ -67,6 +79,14 @@ void MotorControl::emergencyStop() {
     Serial.println("🛑 PARADA DE EMERGENCIA ACTIVADA (I2C o Timeout)");
 }
 
+// En MotorControl.cpp - Agregar función de reset
+void MotorControl::resetEmergency() {
+    if (emergencyStopActive) {
+        emergencyStopActive = false;
+        Serial.println("🔄 Emergencia reseteada en Slave");
+    }
+}
+
 void MotorControl::executeManualCommand(byte command) {
     switch(command) {
         case CMD_MANUAL_FORWARD:
@@ -87,36 +107,77 @@ void MotorControl::executeManualCommand(byte command) {
 }
 
 // Implementación de movimientos (omitiendo la función executeAutonomousCommand por simplicidad)
+// Nota: Esta función ahora espera la velocidad normalizada (0-1023)
 void MotorControl::moveForward(int speed) {
-    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); analogWrite(ENA, speed);
-    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); analogWrite(ENB, speed);
+    int duty = map(speed, 0, 255, 0, MAX_DUTY_CYCLE);
+    // Motor Izquierdo (Canal A) - Adelante
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); 
+    ledcWrite(LEDC_CH_A, duty);
+    //digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); analogWrite(ENA, speed);
+    // Motor Derecho (Canal B) - Adelante
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); 
+    ledcWrite(LEDC_CH_B, duty);
+    //digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); analogWrite(ENB, speed);
 }
 void MotorControl::moveBackward(int speed) {
-    digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH); analogWrite(ENA, speed);
-    digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH); analogWrite(ENB, speed);
+    int duty = map(speed, 0, 255, 0, MAX_DUTY_CYCLE);
+
+    // Motor Izquierdo (Canal A) - Atrás
+    digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH); 
+    ledcWrite(LEDC_CH_A, duty);
+    
+    // Motor Derecho (Canal B) - Atrás
+    digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH); 
+    ledcWrite(LEDC_CH_B, duty);
 }
+
 void MotorControl::turnLeft(int speed) {
-    digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH); analogWrite(ENA, speed); // Izq: Atrás
-    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); analogWrite(ENB, speed); // Der: Adelante
+    int duty = map(speed, 0, 255, 0, MAX_DUTY_CYCLE);
+
+    // Izq: Atrás (velocidad media para pivotar)
+    digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH); 
+    ledcWrite(LEDC_CH_A, duty / 2); // Velocidad media
+    
+    // Der: Adelante
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); 
+    ledcWrite(LEDC_CH_B, duty);
 }
+
 void MotorControl::turnRight(int speed) {
-    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); analogWrite(ENA, speed); // Izq: Adelante
-    digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH); analogWrite(ENB, speed); // Der: Atrás
+    int duty = map(speed, 0, 255, 0, MAX_DUTY_CYCLE);
+
+    // Izq: Adelante
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); 
+    ledcWrite(LEDC_CH_A, duty);
+    
+    // Der: Atrás (velocidad media para pivotar)
+    digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH); 
+    ledcWrite(LEDC_CH_B, duty / 2); // Velocidad media
 }
+
 void MotorControl::stop() {
-    analogWrite(ENA, 0); analogWrite(ENB, 0);
+    // Apagar PWM
+    ledcWrite(LEDC_CH_A, 0); 
+    ledcWrite(LEDC_CH_B, 0);
+    
+    // Poner pines de dirección en LOW/LOW (freno dinámico si el driver lo soporta, o coast)
     digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
     digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
 }
 
+// ⚠️ Usar setMotorSpeeds requiere también ajustar el PWM, no solo analogWrite.
 void MotorControl::setMotorSpeeds(int leftSpeed, int rightSpeed) {
-        // Suavizado de velocidad
-        currentLeftSpeed = smoothSpeed(currentLeftSpeed, leftSpeed);
-        currentRightSpeed = smoothSpeed(currentRightSpeed, rightSpeed);
-        
-        analogWrite(ENA, currentLeftSpeed);
-        analogWrite(ENB, currentRightSpeed);
-    }
+    // Suavizado de velocidad (se asume que leftSpeed/rightSpeed están en rango 0-255)
+    currentLeftSpeed = smoothSpeed(currentLeftSpeed, leftSpeed);
+    currentRightSpeed = smoothSpeed(currentRightSpeed, rightSpeed);
+    
+    // Convertir de 0-255 a 0-1023 (MAX_DUTY_CYCLE)
+    int dutyLeft = map(currentLeftSpeed, 0, 255, 0, MAX_DUTY_CYCLE);
+    int dutyRight = map(currentRightSpeed, 0, 255, 0, MAX_DUTY_CYCLE);
+    
+    ledcWrite(LEDC_CH_A, dutyLeft);
+    ledcWrite(LEDC_CH_B, dutyRight);
+}
  
     int MotorControl::smoothSpeed(int current, int target) {
         if(abs(current - target) <= MAX_ACCELERATION) return target;
