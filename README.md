@@ -10,8 +10,7 @@ Sistema robótico con control BLE, navegación autónoma y evasión de obstácul
 - 🛡️ **Sistema de prioridades** (Emergencia > Manual > Auto > Seguridad)
 - 🎯 **Arquitectura distribuida**
 - 1) ESP32 (cerebro) + Arduino (ejecutor)
-  2) ESP32 Master SPI (cerebro)
-  3) + ESP32 Slave SPI (ejecutor)
+  2) ESP32 Master SPI (cerebro) + ESP32 Slave SPI (ejecutor)
 - 🔊 **Comunicación I2C o SPI** entre microcontroladores
 
 ## 🎮 Comandos BLE
