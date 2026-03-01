@@ -1,0 +1,522 @@
+// Esp32Slave - MotorControl.cpp
+
+#include "MotorControl.h"
+
+void MotorControl::begin() {
+    Serial.println("🚗 Inicializando MotorControl L298N...");
+    
+    // 1. Configurar pines de dirección como outputs
+    gpio_config_t dir_pins = {};
+    dir_pins.pin_bit_mask = (1ULL << IN1) | (1ULL << IN2) | 
+                            (1ULL << IN3) | (1ULL << IN4);
+    dir_pins.mode = GPIO_MODE_OUTPUT;
+    dir_pins.pull_up_en = GPIO_PULLUP_DISABLE;
+    dir_pins.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    dir_pins.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&dir_pins);
+    
+    // Estado inicial seguro
+    gpio_set_level((gpio_num_t)IN1, 0);
+    gpio_set_level((gpio_num_t)IN2, 0);
+    gpio_set_level((gpio_num_t)IN3, 0);
+    gpio_set_level((gpio_num_t)IN4, 0);
+    
+    ledc_timer_config_t ledc_timer = {
+    .speed_mode       = LEDC_LOW_SPEED_MODE,
+    .duty_resolution  = (ledc_timer_bit_t)MOTOR_PWM_RES, // <--- Cast aquí
+    .timer_num        = LEDC_TIMER_0,
+    .freq_hz          = MOTOR_PWM_FREQ,
+    .clk_cfg          = LEDC_AUTO_CLK
+};
+    
+    esp_err_t ret = ledc_timer_config(&ledc_timer);
+    if (ret != ESP_OK) {
+        Serial.printf("❌ Error timer LEDC: 0x%X\n", ret);
+        ledc_initialized = false;
+        return;
+    }
+    
+    // 3. Configurar canal A (Motor izquierdo)
+    ledc_channel_a.gpio_num = (gpio_num_t)ENA;
+    ledc_channel_a.speed_mode = LEDC_LOW_SPEED_MODE;
+    ledc_channel_a.channel = LEDC_CHANNEL_0;
+    ledc_channel_a.intr_type = LEDC_INTR_DISABLE;
+    ledc_channel_a.timer_sel = LEDC_TIMER_0;
+    ledc_channel_a.duty = 0;
+    ledc_channel_a.hpoint = 0;
+    ledc_channel_a.flags.output_invert = 0;
+    
+    ret = ledc_channel_config(&ledc_channel_a);
+    if (ret != ESP_OK) {
+        Serial.printf("❌ Error canal LEDC A: 0x%X\n", ret);
+        ledc_initialized = false;
+        return;
+    }
+    
+    // 4. Configurar canal B (Motor derecho)
+    ledc_channel_b.gpio_num = (gpio_num_t)ENB;
+    ledc_channel_b.speed_mode = LEDC_LOW_SPEED_MODE;
+    ledc_channel_b.channel = LEDC_CHANNEL_1;
+    ledc_channel_b.intr_type = LEDC_INTR_DISABLE;
+    ledc_channel_b.timer_sel = LEDC_TIMER_0;
+    ledc_channel_b.duty = 0;
+    ledc_channel_b.hpoint = 0;
+    ledc_channel_b.flags.output_invert = 0;
+    
+    ret = ledc_channel_config(&ledc_channel_b);
+    if (ret != ESP_OK) {
+        Serial.printf("❌ Error canal LEDC B: 0x%X\n", ret);
+        ledc_initialized = false;
+        return;
+    }
+    
+    // 5. Establecer duty cycle inicial
+    ledc_set_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel, 0);
+    ledc_set_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel, 0);
+    ledc_update_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel);
+    ledc_update_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel);
+    
+    // 6. Inicializar variables de estado
+    targetLeftSpeed = 0;
+    targetRightSpeed = 0;
+    currentLeftSpeed = 0;
+    currentRightSpeed = 0;
+    lastUpdateTime = millis();
+    ledc_initialized = true;
+    applyHardwarePWM(0, 0);
+    Serial.println("✅ MotorControl inicializado correctamente");
+    Serial.printf("   PWM: %d Hz, %d bits, Canales: %d y %d\n", 
+                  MOTOR_PWM_FREQ, 
+                  (MOTOR_PWM_RES == LEDC_TIMER_10_BIT) ? 10 : 8,
+                  ledc_channel_a.channel, 
+                  ledc_channel_b.channel);
+}
+
+void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
+    // Verificar que LEDC esté inicializado
+    if (!ledc_initialized) {
+        Serial.println("❌ ERROR: LEDC no inicializado en applyHardwarePWM");
+        return;
+    }
+    
+    uint32_t dutyLeft = abs(left);
+    uint32_t dutyRight = abs(right);
+
+    if (dutyLeft > MAX_DUTY_CYCLE) dutyLeft = MAX_DUTY_CYCLE;
+    if (dutyRight > MAX_DUTY_CYCLE) dutyRight = MAX_DUTY_CYCLE;
+
+    // 2. Lógica Motor Izquierdo (ENA, IN1, IN2)
+    if (left > 0) { // Adelante
+        gpio_set_level((gpio_num_t)IN1, 1);
+        gpio_set_level((gpio_num_t)IN2, 0);
+    } else if (left < 0) { // Atrás
+        gpio_set_level((gpio_num_t)IN1, 0);
+        gpio_set_level((gpio_num_t)IN2, 1);
+    } else { // Parada
+        gpio_set_level((gpio_num_t)IN1, 0);
+        gpio_set_level((gpio_num_t)IN2, 0);
+    }
+    
+    // Aplicar PWM usando la configuración guardada
+    ledc_set_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel, dutyLeft);
+    ledc_update_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel);
+
+    // 3. Lógica Motor Derecho (ENB, IN3, IN4)
+    if (right > 0) { // Adelante
+        gpio_set_level((gpio_num_t)IN3, 1);
+        gpio_set_level((gpio_num_t)IN4, 0);
+    } else if (right < 0) { // Atrás
+        gpio_set_level((gpio_num_t)IN3, 0);
+        gpio_set_level((gpio_num_t)IN4, 1);
+    } else { // Parada
+        gpio_set_level((gpio_num_t)IN3, 0);
+        gpio_set_level((gpio_num_t)IN4, 0);
+    }
+    
+    ledc_set_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel, dutyRight);
+    ledc_update_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel);
+    
+    // Debug (opcional)
+    static uint32_t last_debug = 0;
+    uint32_t now = millis();
+    if (now - last_debug > 500) {
+        last_debug = now;
+        Serial.printf("⚙️  PWM: L=%d(%d), R=%d(%d)\n", 
+                      left, dutyLeft, right, dutyRight);
+    }
+}
+
+void MotorControl::setDrive(int16_t targetSpeed, int16_t angle, bool immediate) {
+    if (!ledc_initialized) {
+        Serial.println("❌ ERROR: MotorControl no inicializado");
+        return;
+    }
+    // Filtro de seguridad: Si la velocidad es absurda, es basura de SPI
+    if (abs(targetSpeed) > 1023 || abs(angle) > 360) return;
+
+    // 1. AJUSTE DE ÁNGULO: Si el Master envía 0 como "adelante", 
+    // pero tu fórmula trigonométrica usa 0 como "derecha", sumamos 90.
+    // Si los giros están invertidos, cambiamos el signo del ángulo aquí.
+    float rad = (angle * M_PI) / 180.0; 
+
+    float x = cos(rad); // Componente de giro
+    float y = sin(rad); // Componente de avance
+    
+    // 2. CÁLCULO DE POTENCIA
+    // Invertimos el signo de 'x' si el giro sigue al revés
+
+    int16_t rawLeft = (y - x) * targetSpeed; 
+    int16_t rawRight = (y + x) * targetSpeed;
+
+    float factorInterior = 0.4f;
+
+// 2. Solo aplicamos el suavizado si hay intención de giro (signos opuestos)
+if (rawLeft * rawRight < 0) {
+    // CASO A: AVANCE (Ángulo < 180 en el Master)
+    // Queremos que la rueda negativa se vuelva positiva atenuada
+    if (y>=0) {
+        if (rawLeft < 0) rawLeft  = -rawLeft  * factorInterior;
+        else rawRight = -rawRight * factorInterior;
+    } 
+    // CASO B: RETROCESO (y<0 en el Master)
+    // Queremos que la rueda positiva se vuelva negativa atenuada (para retroceder curveando)
+    else {
+        if (rawLeft > 0)  rawLeft  = -rawLeft  * factorInterior;
+        else rawRight = -rawRight * factorInterior;
+    }
+}
+    // Si tienen el mismo signo (ambos adelante o ambos atrás), no tocamos nada.
+    // 3. RESOLUCIÓN PWM:
+    // Si configuraste el PWM a 10 bits, el máximo es 1023.
+    // Si es a 8 bits, es 255. Ajusta este valor al tuyo.
+    const int MAX_VAL = 1023; 
+    rawLeft = constrain(rawLeft, -MAX_VAL, MAX_VAL);
+    rawRight = constrain(rawRight, -MAX_VAL, MAX_VAL);
+
+    lastUpdateTime = millis();
+    if (immediate || targetSpeed == 0) {
+        targetLeftSpeed = 0;
+        targetRightSpeed = 0;
+        currentLeftSpeed = 0;
+        currentRightSpeed = 0;
+        applyHardwarePWM(0, 0);
+    }else{
+        targetLeftSpeed = rawLeft;
+        targetRightSpeed = rawRight;  
+    }
+}
+void MotorControl::updateRamping() {
+    if (!ledc_initialized) return;
+            /* 1. Verificar emergencia ANTES de mover motores
+        if (sonar && sonar->isEmergency()) {
+            if (!emergencyStopActive) {
+                Serial.println("🛑 ¡EMERGENCIA! Parando motores");
+                emergencyStopActive = true;
+                stop();
+            }
+            return;  // No seguir con movimiento normal
+        }
+        
+        // Si salió de emergencia, reactivar
+        if (emergencyStopActive) {
+            Serial.println("✅ Emergencia resuelta, reanudando");
+            emergencyStopActive = false;
+        }*/
+        
+    static uint32_t lastRampTime = 0;
+    uint32_t ahora = millis();
+
+    if (ahora - lastRampTime < 20) return;
+    lastRampTime = ahora;
+
+    // Heartbeat timeout
+    if (ahora - lastUpdateTime > HEARTBEAT_TIMEOUT) {
+        if (targetLeftSpeed != 0 || targetRightSpeed != 0) {
+            Serial.println("🛑 Heartbeat timeout - Deteniendo motores");
+        }
+        targetLeftSpeed = 0;
+        targetRightSpeed = 0;
+    }
+
+    // Lógica de rampa
+    const int16_t ACCEL_STEP = 10;
+    const int16_t DECEL_STEP = 20;
+
+    auto calculateRamp = [&](int16_t current, int16_t target) -> int16_t {
+        if (current == target) return current;
+        
+        int16_t step = (abs(target) > abs(current)) ? ACCEL_STEP : DECEL_STEP;
+        
+        if (target > current) return min((int16_t)(current + step), target);
+        else return max((int16_t)(current - step), target);
+    };
+
+    currentLeftSpeed = calculateRamp(currentLeftSpeed, targetLeftSpeed);
+    currentRightSpeed = calculateRamp(currentRightSpeed, targetRightSpeed);
+
+    // Enviar al hardware
+    this->applyHardwarePWM(currentLeftSpeed, currentRightSpeed);
+}
+
+void MotorControl::emergencyStop() {
+    targetLeftSpeed = 0;
+    targetRightSpeed = 0;
+    currentLeftSpeed = 0;
+    currentRightSpeed = 0;
+    
+    if (ledc_initialized) {
+        gpio_set_level((gpio_num_t)IN1, 0);
+        gpio_set_level((gpio_num_t)IN2, 0);
+        gpio_set_level((gpio_num_t)IN3, 0);
+        gpio_set_level((gpio_num_t)IN4, 0);
+        
+        ledc_set_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel, 0);
+        ledc_set_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel, 0);
+        ledc_update_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel);
+        ledc_update_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel);
+    }
+    
+    Serial.println("🛑 EMERGENCY STOP ejecutado");
+}
+void MotorControl::setSpeed(int speedA, int speedB) {
+    // Limitar valores entre -1023 y 1023
+    speedA = constrain(speedA, -1023, 1023);
+    speedB = constrain(speedB, -1023, 1023);
+    
+    // Control Motor A
+    if (speedA > 0) {
+        // Adelante
+        gpio_set_level((gpio_num_t)IN1, 1);
+        gpio_set_level((gpio_num_t)IN2, 0);
+        ledc_set_duty(ledc_channel_a.speed_mode, 
+                      ledc_channel_a.channel, 
+                      abs(speedA));
+    } 
+    else if (speedA < 0) {
+        // Atrás
+        gpio_set_level((gpio_num_t)IN1, 0);
+        gpio_set_level((gpio_num_t)IN2, 1);
+        ledc_set_duty(ledc_channel_a.speed_mode, 
+                      ledc_channel_a.channel, 
+                      abs(speedA));
+    } 
+    else {
+        // Parar
+        gpio_set_level((gpio_num_t)IN1, 0);
+        gpio_set_level((gpio_num_t)IN2, 0);
+        ledc_set_duty(ledc_channel_a.speed_mode, 
+                      ledc_channel_a.channel, 
+                      0);
+    }
+    
+    // Control Motor B (similar)
+    if (speedB > 0) {
+        gpio_set_level((gpio_num_t)IN3, 1);
+        gpio_set_level((gpio_num_t)IN4, 0);
+        ledc_set_duty(ledc_channel_b.speed_mode, 
+                      ledc_channel_b.channel, 
+                      abs(speedB));
+    } 
+    else if (speedB < 0) {
+        gpio_set_level((gpio_num_t)IN3, 0);
+        gpio_set_level((gpio_num_t)IN4, 1);
+        ledc_set_duty(ledc_channel_b.speed_mode, 
+                      ledc_channel_b.channel, 
+                      abs(speedB));
+    } 
+    else {
+        gpio_set_level((gpio_num_t)IN3, 0);
+        gpio_set_level((gpio_num_t)IN4, 0);
+        ledc_set_duty(ledc_channel_b.speed_mode, 
+                      ledc_channel_b.channel, 
+                      0);
+    }
+    
+    // ACTUALIZAR DUTY (crítico!)
+    ledc_update_duty(ledc_channel_a.speed_mode, ledc_channel_a.channel);
+    ledc_update_duty(ledc_channel_b.speed_mode, ledc_channel_b.channel);
+}
+
+// MotorControl.cpp - Versión simplificada
+void MotorControl::handleSPICommand(const ControlCommand_t* cmd) {
+    if (!cmd) return;
+    // 1. Validar el tipo de comando (Si es basura, ignorar)
+    if (cmd->type != CMD_STOP && cmd->type != CMD_DRIVE && cmd->type != CMD_STATUS && cmd->type != CMD_READ_SENSORS) {
+        return; 
+    }
+    // Actualizar el timestamp del último comando recibido
+    this->lastUpdateTime = millis();
+
+    if (cmd->type == CMD_STOP) {
+        this->targetLeftSpeed = 0;
+        this->targetRightSpeed = 0;
+        this->currentLeftSpeed = 0; // Parada instantánea en emergencia
+        this->currentRightSpeed = 0;
+        this->setDrive(0, 0, true); // Frenado inmediato
+        return;
+    }
+
+    if (cmd->type == CMD_DRIVE) {
+        this->setDrive(cmd->speed, cmd->angle, false);
+    }          
+}
+
+
+void MotorControl::updateSafety() {
+    if (isSafetyTimeout() && !emergencyStopActive) {
+        stop();
+    }
+}
+
+// Implementación de movimientos (omitiendo la función executeAutonomousCommand por simplicidad)
+void MotorControl::moveForward(int speed) {
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); analogWrite(ENA, speed);
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); analogWrite(ENB, speed);
+}
+void MotorControl::moveBackward(int speed) {
+    // ✅ OPTIMIZADA para HW-095 con regulador 5V
+    speed = constrain(speed, 0, MAX_SAFE_SPEED);
+    
+    Serial.printf("[HW-095] 🔙 ATRÁS solicitado: %d/255\n", speed);
+    
+    // 1. SI estamos yendo adelante, parar brevemente
+    if (currentLeftSpeed > 0 || currentRightSpeed > 0) {
+        Serial.println("  ↪️ Transición ADELANTE→ATRÁS: Parada breve");
+        stop();
+        delay(20);  // ⬅️ HW-095 necesita menos delay
+    }
+    
+    // 2. Configurar dirección (con delay reducido para HW-095)
+    // Motor izquierdo: Atrás
+    digitalWrite(IN1, LOW);
+    delayMicroseconds(100);  // ⬅️ HW-095 es más rápido
+    digitalWrite(IN2, HIGH);
+    
+    // Motor derecho: Atrás
+    digitalWrite(IN3, LOW);
+    delayMicroseconds(100);
+    digitalWrite(IN4, HIGH);
+    
+    // 3. Aplicar PWM con rampa OPTIMIZADA
+    int duty = map(speed, 0, 255, 0, 255); // 8-bit
+    
+    // Rampa más agresiva (HW-095 lo soporta mejor)
+    int step = (duty > 100) ? 15 : 10;
+    for (int i = 0; i <= duty; i += step) {
+        ledcWrite(0, i);  // Canal 0 = ENA
+        ledcWrite(1, i);  // Canal 1 = ENB
+        delay(2);
+    }
+    
+    // 4. Actualizar estado
+    currentLeftSpeed = -speed;
+    currentRightSpeed = -speed;
+    
+    // 5. MONITOREO (opcional)
+    static uint32_t backwardCount = 0;
+    backwardCount++;
+    if (backwardCount % 5 == 0) {
+        Serial.printf("  📊 Stats: %d movimientos atrás ejecutados\n", backwardCount);
+    }
+}
+
+void MotorControl::turnLeft(int speed) {
+    digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH); analogWrite(ENA, speed); // Izq: Atrás
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); analogWrite(ENB, speed); // Der: Adelante
+}
+void MotorControl::turnRight(int speed) {
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); analogWrite(ENA, speed); // Izq: Adelante
+    digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH); analogWrite(ENB, speed); // Der: Atrás
+}
+void MotorControl::stop() {
+    analogWrite(ENA, 0); analogWrite(ENB, 0);
+    digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+}
+
+void MotorControl::setMotorSpeeds(int leftSpeed, int rightSpeed) {
+        // Suavizado de velocidad
+        currentLeftSpeed = smoothSpeed(currentLeftSpeed, leftSpeed);
+        currentRightSpeed = smoothSpeed(currentRightSpeed, rightSpeed);
+        
+        analogWrite(ENA, currentLeftSpeed);
+        analogWrite(ENB, currentRightSpeed);
+    }
+ 
+    int MotorControl::smoothSpeed(int current, int target) {
+        if(abs(current - target) <= MAX_ACCELERATION) return target;
+        return (current < target) ? current + MAX_ACCELERATION : current - MAX_ACCELERATION;
+    }
+
+
+void MotorControl::resetSafetyTimer() {
+    lastUpdateTime = millis();
+}
+/*
+void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
+    // 1. Escalar de 8 bits (Master) a 10 bits (Slave)
+    // 255 * 4 = 1020 (cerca de 1023)
+    uint32_t dutyLeft = abs(left) * 4;
+    uint32_t dutyRight = abs(right) * 4;
+
+    if (dutyLeft > MAX_DUTY_CYCLE) dutyLeft = MAX_DUTY_CYCLE;
+    if (dutyRight > MAX_DUTY_CYCLE) dutyRight = MAX_DUTY_CYCLE;
+
+    // 2. Lógica Motor Izquierdo (ENA, IN1, IN2)
+    if (left > 0) { // Adelante
+        digitalWrite(IN1, HIGH);
+        digitalWrite(IN2, LOW);
+    } else if (left < 0) { // Atrás
+        digitalWrite(IN1, LOW);
+        digitalWrite(IN2, HIGH);
+    } else { // Parada
+        digitalWrite(IN1, LOW);
+        digitalWrite(IN2, LOW);
+    }
+    ledcWrite(LEDC_CH_A, dutyLeft);
+
+    // 3. Lógica Motor Derecho (ENB, IN3, IN4)
+    if (right > 0) { // Adelante
+        digitalWrite(IN3, HIGH);
+        digitalWrite(IN4, LOW);
+    } else if (right < 0) { // Atrás
+        digitalWrite(IN3, LOW);
+        digitalWrite(IN4, HIGH);
+    } else { // Parada
+        digitalWrite(IN3, LOW);
+        digitalWrite(IN4, LOW);
+    }
+    ledcWrite(LEDC_CH_B, dutyRight);
+}
+  */  
+bool MotorControl::isSafetyTimeout() {
+    unsigned long elapsed = millis() - lastUpdateTime;
+    
+    if (elapsed > SAFETY_TIMEOUT_MS) {
+        Serial.printf("[Safety] ⏰ Timeout: %lums sin comandos\n", elapsed);
+        return true;
+    }
+    return false;
+}
+// En MotorControl.cpp del Slave
+uint8_t MotorControl::getMotorStatus() {
+    uint8_t status = 0x00;
+    
+    if (emergencyStopActive) {
+        status |= 0x01; // Bit 0: Emergencia activa
+        Serial.println("[Status] ⚠️ EMERGENCIA ACTIVA - Motores bloqueados");
+    }
+    if (currentLeftSpeed != 0 || currentRightSpeed != 0) {
+        status |= 0x02; // Bit 1: Movimiento
+    }
+    if (isSafetyTimeout()) {
+        status |= 0x04; // Bit 2: Timeout de seguridad
+        Serial.println("[Status] ⚠️ TIMEOUT ACTIVO - Sin comandos recientes");
+    }
+    
+    return status;
+}
+
+
+
+

@@ -1,0 +1,76 @@
+// SPIDefinitions.h - Versión simplificada
+#ifndef SPI_DEFINITIONS_H
+#define SPI_DEFINITIONS_H
+
+#include <stdint.h>
+#include <Arduino.h>
+#include <driver/spi_slave.h>  // ✅ Para ESP32 SPI slave
+
+// Pines HSPI ESP32-S3
+// Configuración óptima para ESP32-S3
+#define SPI_CLK  39   
+#define SPI_MISO 40     
+#define SPI_MOSI 41   
+#define SPI_SS   42
+
+extern uint16_t calcularChecksum(void* data, size_t len);
+
+// SOLO comandos básicos, el modo se define en targetMode
+typedef enum : uint8_t {
+    CMD_EMERGENCY_STOP = 0,
+    CMD_MOVE_FORWARD,      // Usar con targetMode = AUTO o MANUAL
+    CMD_MOVE_BACKWARD,
+    CMD_TURN_LEFT,
+    CMD_TURN_RIGHT,
+    CMD_STOP,
+    CMD_SET_SPEED,
+    CMD_READ_SENSORS,
+    CMD_STATUS,
+    CMD_SET_MODE          // Para cambiar modo explícitamente
+} ControlCommandType;
+
+typedef enum : uint8_t {
+    MODE_AUTO = 0,
+    MODE_MANUAL
+} ControlMode;
+
+// Estructura de comando (igual)
+typedef struct __attribute__((packed)) {
+    uint8_t type;          // ControlCommandType
+    int16_t speed;         // 0-255
+    int16_t angle;         // Para giros específicos
+    int16_t distance;      // Para movimientos con distancia
+    uint32_t timestamp;
+    uint8_t priority;
+    uint8_t status;        // Estado actual
+    uint8_t targetMode;    // ControlMode (AUTO o MANUAL)
+} ControlCommand_t;
+
+// Estructuras de frames (igual)
+typedef struct __attribute__((packed)) {
+    uint8_t status;
+    uint16_t distance;
+} SlaveResponse_t;
+// Estructura de datos compartida
+typedef struct {
+    uint16_t sonarDistance;
+    bool emergencyFlag;
+} GlobalSensorData_t;
+
+extern GlobalSensorData_t g_sensorData; 
+extern SemaphoreHandle_t xSensorDataMutex; 
+
+typedef struct __attribute__((packed)) {
+    uint8_t magic_word;      // 0xA5 para comandos
+    ControlCommand_t payload;
+    uint16_t checksum;
+} SPIFrame_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t magic_word;      // 0x5A para respuestas
+    SlaveResponse_t payload;
+    uint8_t padding[8]; // Relleno para igualar al tamaño del frame de comando
+    uint16_t checksum;
+} SPIResponseFrame_t;
+
+#endif

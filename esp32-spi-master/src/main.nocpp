@@ -1,0 +1,672 @@
+// main.cpp - ESP32 con FreeRTOS
+#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include "BluetoothLeConnect.h"
+#include "SensorControl.h"
+#include "SPIMaster.h"
+
+    /*
+ESP32-S3 MASTER          ESP32-S3 SLAVE
+GPIO 41 (MOSI) ------- GPIO 41 (MOSI)
+GPIO 40 (MISO) ------- GPIO 40 (MISO)  
+GPIO 39 (SCLK) ------- GPIO 39 (SCLK)
+GPIO 42 (CS)   ------- GPIO 42 (CS)
+      GND      -------      GND
+      */
+#define SPI_CLK  39   
+#define SPI_MISO 40     
+#define SPI_MOSI 41   
+#define SPI_SS   42
+// Prioridades
+#define TASK_PRIORITY_SAFETY    4
+#define TASK_PRIORITY_SPI       3
+#define TASK_PRIORITY_NAV       2  
+#define TASK_PRIORITY_BLE       1
+
+#define DISTANCIA_CRITICA_STOP 150 // 15cm o 150mm - Detener inmediatamente
+
+// Estados del sistema de navegación
+enum SystemState {
+ STATE_I,   // Estado inicial de espera
+ STATE_F,   // Escaneo Frontal (se espera comando 'L')
+ STATE_L,   // Escaneo Izquierdo (se espera comando 'R')
+ STATE_R,   // Escaneo Derecho (se espera comando 'F')
+ STATE_READY // Listo para operar
+};
+SystemState currentState = STATE_I;
+
+
+// Handles globales de FreeRTOS
+TaskHandle_t xSafetyTaskHandle = NULL;
+TaskHandle_t xSensorRead_Handle = NULL;
+TaskHandle_t xSPITaskHandle = NULL;
+TaskHandle_t xNavigationTaskHandle = NULL;
+TaskHandle_t xBLETaskHandle = NULL;
+
+QueueHandle_t xSensorQueue;
+QueueHandle_t xControlQueue;
+
+static SemaphoreHandle_t spi_mutex = NULL;
+
+//extern void evaluarEmergenciaInmediata(const SensorData_t &sd);
+
+// ✅ DECLARAR TODAS LAS TASKS
+void safetyTask(void *pvParameters);
+void sensorRead_Task(void *pvParameters);
+void navigationTask(void *pvParameters);
+void bleTask(void *pvParameters);
+void spiMasterTask(void *pvParameters);
+
+void handleSystemState();
+void processStateCommand(char command);
+void checkJTAGPins();
+
+
+// Instancias globales
+SPIMaster spiMaster;
+BluetoothLeConnect ble;
+SensorControl sensors;
+SensorData_t dataSensors;
+
+bool autonomousMode = false;
+void handleSystemState();
+void processStateCommand(char command);
+
+void stopRobot() {
+    ControlCommand_t stopCmd;
+    memset(&stopCmd, 0, sizeof(ControlCommand_t));
+
+    stopCmd.type = CMD_STOP;           // O CMD_EMERGENCY_STOP según la gravedad
+    stopCmd.priority = 10;             // Prioridad alta
+    stopCmd.timestamp = millis();
+    stopCmd.targetMode = MODE_MANUAL;  // Al detenerse, solemos pasar a manual por seguridad
+
+    // Intentamos enviarlo al frente de la cola para que sea inmediato
+    if (xControlQueue != NULL) {
+        if (xQueueSend(xControlQueue, &stopCmd, 0) != pdTRUE) {
+            Serial.println("⚠️ Fallo crítico: Cola de control llena al intentar parar");
+        } else {
+            Serial.println("🛑 Comando STOP enviado a la cola");
+        }
+    }
+}
+void updateRobotLogic() {
+    SensorData_t sensorsData = dataSensors;
+    ControlCommand_t nextCmd;
+    memset(&nextCmd, 0, sizeof(ControlCommand_t));
+
+    // 1. Obtener la última lectura de sensores (desde la cola que llena la spiMasterTask)
+    if (xQueuePeek(xSensorQueue, &sensorsData, 0) == pdTRUE) {
+        uint32_t now = millis();
+        // VALIDACIÓN: ¿Están los datos frescos?
+        bool sonarAlive = (now - sensorsData.lastSonarUpdate < 500); // 500ms timeout
+        bool tofsAlive = (now - sensorsData.lastTofUpdate < 500);
+        if (!sonarAlive || !tofsAlive) {
+            Serial.println("🚨 ERROR: Sensores desactualizados. Modo SEGURO.");
+            stopRobot();
+            return;
+        }
+        
+        // 2. Lógica de decisión
+        if (sensorsData.sonarDistance < 30) {
+            // Peligro: Generar comando de parada o giro
+            nextCmd.type = CMD_EMERGENCY_STOP;
+            nextCmd.priority = 10; // Máxima prioridad
+        } else {
+            // Todo despejado: Seguir adelante
+            nextCmd.type = CMD_MOVE_FORWARD;
+            nextCmd.speed = 150;
+        }
+        // 3. ENVIAR A LA COLA (No al motor directamente)
+        // La spiMasterTask recogerá esto y lo mandará por SPI
+        xQueueSend(xControlQueue, &nextCmd, 0);
+        //procesarNavegacion(sensorsData);
+    }
+}
+
+// En el Master, en setup() o cuando inicies:
+// En el Master, en setup() o cuando inicies:
+void resetSlaveEmergency() {
+    Serial.println("🔄 Reseteando emergencia en Slave...");
+    
+    // 1. Enviar STOP para resetear emergencia
+    ControlCommand_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type = CMD_STOP;
+    cmd.targetMode = MODE_MANUAL;
+    cmd.timestamp = millis();
+    cmd.priority = 10;
+    
+    spiMaster.sendCommand(&cmd);
+    delay(100);
+    
+    // 2. Enviar SET_MODE a MANUAL
+    cmd.type = CMD_SET_MODE;
+    cmd.targetMode = MODE_MANUAL;
+    
+    spiMaster.sendCommand(&cmd);
+    delay(100);
+    
+    Serial.println("✅ Slave reseteado (emergencia limpiada)");
+}
+void executeSPICommand(ControlCommand_t cmd) {
+    // Asegurar timestamp y prioridad
+    if (cmd.timestamp == 0) cmd.timestamp = millis();
+    if (cmd.priority == 0) cmd.priority = 1; // Prioridad por defecto
+    
+    // Determinar modo basado en autonomousMode si no está especificado
+    if (cmd.targetMode != MODE_AUTO && cmd.targetMode != MODE_MANUAL) {
+        cmd.targetMode = autonomousMode ? MODE_AUTO : MODE_MANUAL;
+    }
+    
+    // Log según prioridad
+    if (cmd.priority >= 9) {
+        Serial.printf("🚨 URGENTE: Cmd 0x%02X | Prio: %d | Mode: %s\n",
+                     cmd.type, cmd.priority,
+                     cmd.targetMode == MODE_AUTO ? "AUTO" : "MANUAL");
+    } else if (cmd.priority >= 5) {
+        Serial.printf("⚠️  ALTA: Cmd 0x%02X | Prio: %d\n", cmd.type, cmd.priority);
+    } else {
+        // Log reducido para comandos normales
+        // Serial.printf("[SPI] Cmd: 0x%02X\n", cmd.type);
+    }
+    cmd.timestamp = millis();
+    // Enviamos la estructura completa a la cola
+        if (xQueueSend(xControlQueue, &cmd, 0) != pdTRUE) {
+            Serial.println("⚠️ Cola de control llena, comando descartado");
+        }   
+}
+
+
+// ✅ SETUP FREERTOS SIMPLIFICADO
+void setupFreeRTOS() {
+    Serial.println("🔧 Inicializando FreeRTOS...");
+    
+    // Crear colas
+    xControlQueue = xQueueCreate(10, sizeof(ControlCommand_t));
+    xSensorQueue = xQueueCreate(5, sizeof(SensorData_t));
+    spi_mutex = xSemaphoreCreateMutex();
+    
+    SensorData_t vacio = {0};
+    xQueueOverwrite(xSensorQueue, &vacio);
+    
+    if (xControlQueue == NULL || xSensorQueue == NULL ) {
+        Serial.println("❌ ERROR: No se pudo crear xControlQueue");
+        while(1);
+    }
+
+    // Crear tasks
+
+    Serial.println("   Creando task SPI...");
+    xTaskCreatePinnedToCore(
+        spiMasterTask,
+        "SPI_Master", 
+        4096,  // ✅ Aumentar stack para SPI
+        &spiMaster,   // ✅ Sin parámetros complejos
+        2,  // Prioridad alta para SPI
+        &xSPITaskHandle,
+        1
+    );
+
+    // Tasks comunes
+    xTaskCreatePinnedToCore(
+        safetyTask,
+        "Safety",
+        4096,
+        NULL,
+        TASK_PRIORITY_SAFETY,
+        &xSafetyTaskHandle,
+        1
+    );
+    xTaskCreatePinnedToCore(
+    sensorRead_Task,     // Función
+    "SensorRead",        // Nombre
+    4096,               // ← AUMENTA ESTE VALOR (ej: 8192 o 16384)
+    NULL,               // Parámetros
+    configMAX_PRIORITIES - 2,
+    &xSensorRead_Handle,
+    1
+);
+    
+    xTaskCreatePinnedToCore(
+        navigationTask,
+        "Navigation",
+        4096, 
+        NULL,
+        TASK_PRIORITY_NAV,
+        &xNavigationTaskHandle,
+        1
+    );
+    
+    xTaskCreatePinnedToCore(
+        bleTask,
+        "BLE",
+        4096,
+        NULL,
+        TASK_PRIORITY_BLE,
+        &xBLETaskHandle,
+        0
+    );
+    
+    Serial.println("✅ FreeRTOS inicializado");
+}
+
+
+void handleSystemState() {
+
+switch(currentState) {
+    case STATE_I:
+        Serial.println("🔵 ESTADO I: Esperando 'F' para iniciar calibración");
+    break;
+    case STATE_F:
+    // Ejecuta la acción de escaneo en este estado (Frontal)
+        dataSensors.tofFront = sensors.readSensor(0);      
+        Serial.printf("🟡 ESTADO F: Frontal = %dmm - Esperando 'L'\n", dataSensors.tofFront);
+    break; // Espera el comando 'L' para pasar al siguiente estado
+
+    case STATE_L:
+    // Ejecuta la acción de escaneo en este estado (Izquierdo)
+        dataSensors.tofLeft = sensors.readSensor(1);
+        Serial.printf("🟠 ESTADO L: Izquierdo = %dmm - Esperando 'R'\n", dataSensors.tofLeft);
+    break; // Espera el comando 'R' para pasar al siguiente estado
+
+    case STATE_R:
+    // Ejecuta la acción de escaneo en este estado (Derecho)
+        dataSensors.tofRight = sensors.readSensor(2);
+        Serial.printf("🔴 ESTADO R: Derecho = %dmm - Esperando 'F' para finalizar\n", dataSensors.tofRight);
+    break; // Espera el comando 'F' para pasar a READY
+
+    case STATE_READY:
+        dataSensors.tofFront = sensors.readSensor(0);     
+        Serial.printf("🟡 ESTADO READY: Frontal = %dmm", dataSensors.tofFront);
+        // ... Lógica normal de READY ...
+        if (millis() % 5000 < 100) {
+            Serial.println("🟢 SISTEMA LISTO - Modo operacional");
+    }
+    break;
+    }
+}
+
+void processStateCommand(char command) {
+ switch(currentState) {
+    case STATE_I:
+        if (command == 'F') { // Comando 'F' inicia la calibración (I -> F)
+        currentState = STATE_F;
+        Serial.println("🎯 Transición: I → F (Iniciar Escaneo Frontal)");
+    }
+    break;
+    case STATE_F:
+        if (command == 'L') { // Comando 'L' pasa al escaneo izquierdo (F -> L)
+        currentState = STATE_L;
+        Serial.println("🎯 Transición: F → L (Escaneo Izquierdo)");
+    }
+    break;
+    case STATE_L:
+        if (command == 'R') { // Comando 'R' pasa al escaneo derecho (L -> R)
+        currentState = STATE_R;
+        Serial.println("🎯 Transición: L → R (Escaneo Derecho)");
+        }
+    break;
+    case STATE_R:
+        if (command == 'F') { // Comando 'F' finaliza y pasa a READY (R -> READY)
+        currentState = STATE_READY;
+        Serial.println("🎯 Transición: R → READY");
+        Serial.println("🚗 ¡SISTEMA LISTO PARA OPERAR!");
+        // performSensorDiagnostics(); // Si quieres ejecutar esto al final
+    }
+    break;
+    case STATE_READY:
+        // En READY, esta función podría procesar comandos de navegación si no están en modo autónomo.
+    break;
+    }
+}
+void spiMasterTask(void *pvParameters) {
+    SPIMaster &spiMaster = *(SPIMaster *)pvParameters;
+    ControlCommand_t currentCmd;
+    uint32_t sensorCycleCounter = 0;
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+if (xSemaphoreTake(spi_mutex, portMAX_DELAY)) {
+    for(;;) {
+        bool commandSent = false;
+
+        // 1. Intentar obtener comando de la cola
+        if (xQueueReceive(xControlQueue, &currentCmd, 0) == pdTRUE) {
+            if (spiMaster.sendCommandWithTimeout(&currentCmd, 100)) {
+                commandSent = true;
+                sensorCycleCounter = 0; 
+            }
+        }
+
+        // 2. Si no hubo comando, pedir sensores (Heartbeat) cada 50ms
+        if (!commandSent) {
+            if (++sensorCycleCounter >= 1) { 
+                spiMaster.requestSensorData(); 
+                sensorCycleCounter = 0;
+            }
+        }
+
+        // ❌ ELIMINA el bloque de abajo que tenías repetido fuera de los IFs
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(50));
+    }
+    xSemaphoreGive(spi_mutex);
+}
+}
+// Task ESPECÍFICA para sensores (alta frecuencia)
+void sensorRead_Task(void *pvParameters) {
+    //extern SensorControl sensors;
+    // Cola para datos de sensores
+    //extern QueueHandle_t xSensorQueue;
+
+    SensorData_t sensorData;
+    memset(&sensorData, 0, sizeof(SensorData_t));
+
+    // Define el período de lectura (e.g., 20ms -> 50Hz)
+    const TickType_t xDelay = pdMS_TO_TICKS(20); 
+    TickType_t xLastWakeTime;
+        // 5. Para lectura secuencial de TOF
+    uint8_t currentTofSensor = 0;
+    uint8_t tofCycle = 0;
+    uint16_t val = 0;
+
+    xLastWakeTime = xTaskGetTickCount();
+
+    while(1) {
+        // Monitorear stack
+        UBaseType_t freeStack = uxTaskGetStackHighWaterMark(NULL);
+        printf("SensorRead Stack free: %u bytes\n", freeStack * sizeof(StackType_t));
+         // Espera hasta el siguiente ciclo de 20ms (ejecución periódica)
+        vTaskDelayUntil(&xLastWakeTime, xDelay); 
+        // 1. Obtener el estado actual de la cola para NO borrar el Sonar
+        xQueuePeek(xSensorQueue, &sensorData, 0);
+        // --- Lógica del Sensor ---
+        // ============================================
+        // 3. LECTURA ROTATIVA DE SENSORES TOF (Multiplexado cada 150ms)
+        // 2. Leer sensor rotativo
+        val = sensors.readSensor(currentTofSensor);
+        // ============================================
+        // 2. Actualizar SOLO los TOF (lógica rotativa)
+        if (++tofCycle >= 3) {
+            tofCycle = 0;
+        // 3. Actualizar campo específico
+            if(currentTofSensor == SENSOR_FRONT) sensorData.tofFront = val;
+            else if(currentTofSensor == SENSOR_LEFT) sensorData.tofLeft = val;
+            else if(currentTofSensor == SENSOR_RIGHT) sensorData.tofRight = val;
+            // 4. Actualizar salud y tiempo
+            sensorData.lastTofUpdate = millis();
+            sensorData.sensorStatus |= (1 << 1); // Set bit 1 (TOF OK)
+            currentTofSensor = (currentTofSensor + 1) % 3;
+        }
+
+        // --- Comunicación ---
+        // Envía el dato a la cola. Espera 0 ticks (no bloquear)
+        xQueueOverwrite(xSensorQueue, &sensorData); 
+        // Usamos Overwrite porque solo queremos el dato más reciente
+        spiMaster.evaluarEmergenciaInmediata(sensorData);
+
+    }
+}    // Tarea crítica: Lectura del sensor
+
+void navigationTask(void *pvParameters) {
+    Serial.println("🧭 Navigation Task - Iniciada");
+    
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(200); // 200ms = 5Hz
+    
+    ControlCommand_t command;
+    SensorData_t sensorData;
+    uint32_t navigationCycle = 0;
+    
+    // Configuración de navegación autónoma
+    const uint16_t MIN_SAFE_DISTANCE = 150;  // 15cm mínimo seguro
+    const uint16_t PREFERRED_DISTANCE = 300; // 30cm preferido
+    const uint16_t TURN_THRESHOLD = 50;      // Diferencia de 5cm para girar
+    vTaskDelay(pdMS_TO_TICKS(100)); 
+    for(;;) {
+        navigationCycle++;
+        
+        // Solo operar si el sistema está listo y en modo autónomo
+        if(currentState == STATE_READY && autonomousMode) { 
+      
+            
+            // 2. Obtener datos del sonar de la cola
+            if(xQueuePeek(xSensorQueue, &sensorData, 0) == pdTRUE) {
+                // Actualizar datos TOF (si es necesario)
+                uint16_t leftDistance = sensorData.tofLeft;
+                uint16_t rightDistance = sensorData.tofRight;
+                uint16_t frontDistance = sensorData.tofFront;
+                uint16_t sonarDistance = sensorData.sonarDistance;
+                
+                // 3. LÓGICA DE DECISIÓN AUTÓNOMA
+                uint16_t effectiveFront = min(frontDistance, sonarDistance);
+                
+                // Inicializar comando
+                memset(&command, 0, sizeof(ControlCommand_t));
+                command.timestamp = millis();
+                command.priority = 2; // Prioridad media para navegación
+                command.targetMode = MODE_AUTO; // Siempre AUTO en esta task
+                
+                if(effectiveFront < MIN_SAFE_DISTANCE) {
+    command.type = CMD_EMERGENCY_STOP;
+    command.priority = 9; 
+    command.speed = 0; // Asegurar velocidad 0
+} 
+else if(effectiveFront < PREFERRED_DISTANCE) {
+    // Lógica de evasión
+    if(sensorData.tofLeft > sensorData.tofRight + TURN_THRESHOLD) {
+        command.type = CMD_MOVE; // Usamos el tipo genérico que entiende el Slave
+        command.speed = 100;
+        command.angle = 180;  // 180 grados = Giro Izquierda en el mixer
+    } 
+    else if(sensorData.tofRight > sensorData.tofLeft + TURN_THRESHOLD) {
+        command.type = CMD_MOVE;
+        command.speed = 100;
+        command.angle = 0;    // 0 grados = Giro Derecha en el mixer
+    }
+    else {
+        command.type = CMD_MOVE;
+        command.speed = 80;
+        command.angle = 270;  // 270 grados = Atrás
+    }
+}
+else {
+    // AVANZAR: Camino despejado
+    command.type = CMD_MOVE;
+    command.angle = 90; // 90 grados = Adelante
+    
+    // Velocidad proporcional: cuanto más espacio, más rápido
+    if(effectiveFront > 600) command.speed = 180;
+    else command.speed = 120;
+}
+                
+                // 4. Enviar comando a la cola de control
+                if(xQueueSend(xControlQueue, &command, 0) != pdTRUE) {
+                    Serial.println("⚠️ Cola de navegación llena - Comando descartado");
+                } else if (navigationCycle % 10 == 0) { // Log cada 10 ciclos
+                    Serial.printf("🧭 Ciclo %d - Comando enviado: 0x%02X\n", 
+                                 navigationCycle, command.type);
+                }
+            }
+            else {
+                // No hay datos de sensores disponibles
+                if (navigationCycle % 20 == 0) {
+                    Serial.println("⚠️ Navigation: Sin datos de sensores");
+                }
+            }
+        }
+        else if (autonomousMode && currentState != STATE_READY) {
+            // Modo auto activado pero sistema no listo
+            if (navigationCycle % 50 == 0) {
+                Serial.printf("🧭 Esperando estado READY (actual: %d)\n", currentState);
+            }
+        }
+        
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    }
+}
+
+// 🚨 TASK DE SEGURIDAD (Máxima Prioridad)
+void safetyTask(void *pvParameters) {
+    Serial.println("🛡️ Safety Task - Iniciada");
+    
+    SensorData_t sensorData;
+    bool lastEmergencyState = false;
+    uint32_t emergencyCount = 0;
+    extern bool autonomousMode; // Asegurar acceso a la variable global
+    vTaskDelay(pdMS_TO_TICKS(100)); 
+    for(;;) {
+        // 1. Revisar cola de sensores sin sacar el dato
+        if(xQueuePeek(xSensorQueue, &sensorData, 0) == pdTRUE) {
+            uint32_t ahora = millis();
+            
+            // Verificación de frescura de datos
+            bool sensoresVivos = (ahora - sensorData.lastSonarUpdate < 1000) && 
+                                 (ahora - sensorData.lastTofUpdate < 1000);
+
+            // --- DETECCIÓN DE EMERGENCIA ---
+            if((sensorData.emergency || !sensoresVivos) && !lastEmergencyState) {
+                emergencyCount++;
+                
+                if(!sensoresVivos) Serial.println("🚨 EMERGENCY - Sensores Perdidos (Timeout)!");
+                else Serial.println("🚨 EMERGENCY - Colisión Inminente!");
+                
+                // Crear comando de emergencia
+                ControlCommand_t emergencyCommand;
+                memset(&emergencyCommand, 0, sizeof(ControlCommand_t));
+                emergencyCommand.type = CMD_EMERGENCY_STOP;
+                emergencyCommand.timestamp = ahora;
+                emergencyCommand.priority = 10;
+                emergencyCommand.targetMode = MODE_MANUAL; 
+
+                // Inyectar al inicio de la cola (prioridad máxima)
+                if(xQueueSend(xControlQueue, &emergencyCommand, 0) != pdTRUE) {
+                    Serial.println("⚠️ Cola llena - Enviando SPI Directo!");
+                    // Si la cola está llena, usamos el puntero de la instancia para enviar ya
+                    // (Asumiendo que tienes acceso a spiMaster aquí o vía executeSPICommand)
+                    // executeSPICommand(emergencyCommand); 
+                }
+                
+                autonomousMode = false; // Desactivar navegación autónoma
+                lastEmergencyState = true;
+                Serial.println("⛔ Modo Autónomo DESACTIVADO");
+            }
+            
+            // --- RESET DE EMERGENCIA ---
+            // Solo reseteamos si el hardware dice OK Y los sensores están vivos
+            else if (!sensorData.emergency && sensoresVivos && lastEmergencyState) {
+                Serial.println("✅ Condiciones normales restauradas. Listo para comandos.");
+                lastEmergencyState = false;
+            }
+        }
+
+        // --- MONITOR DE ACTIVIDAD GENERAL (Fuera del if de la cola) ---
+        static uint32_t lastCheckTime = 0;
+        if (millis() - lastCheckTime > 30000) { 
+            // Esto es solo un log informativo cada 30s
+            // Serial.println("🛡️ Safety Check: OK");
+            lastCheckTime = millis();
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50)); 
+    }
+}
+// 📱 TASK DE BLE
+void bleTask(void *pvParameters) {
+    //ble.begin("ESP32_SPI_Master");
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(50); // 50ms = 20Hz
+    for(;;) {
+        ble.update();
+        // Obtener último comando BLE como estructura
+        if (ble.hasNewCommand) { // Solo si realmente llegó algo nuevo por BLE
+            ControlCommand_t cmd = ble.getLastCommand();
+            // Verificar si es un comando válido
+            if (cmd.type != 0 || cmd.speed != 0 || cmd.angle != 0) {
+            // Asegurar timestamp actual si no viene
+                if (cmd.timestamp == 0) {
+                    cmd.timestamp = millis();
+                }
+            // Debug
+            Serial.printf("🎮 BLE Cmd: type=0x%02X, speed=%d, angle=%d\n",
+                         cmd.type, cmd.speed, cmd.angle);            
+            // Enviar a la cola de control
+            if (!autonomousMode) {
+                xQueueSend(xControlQueue, &cmd, 0);
+            } else {
+                Serial.println("⚠️ Modo Autónomo activo - Comando BLE ignorado");
+            }
+          }
+        }
+               
+        // Esperar usando delay fijo para timing consistente
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    }
+}
+
+void printResetReason() {
+    esp_reset_reason_t reason = esp_reset_reason();
+    Serial.printf("🔄 Reset Reason: ");
+    switch(reason) {
+        case ESP_RST_POWERON: Serial.println("Power On"); break;
+        case ESP_RST_EXT: Serial.println("External Reset"); break;
+        case ESP_RST_SW: Serial.println("Software Reset"); break;
+        case ESP_RST_PANIC: Serial.println("Exception/Panic"); break;
+        case ESP_RST_INT_WDT: Serial.println("Interrupt Watchdog"); break;
+        case ESP_RST_TASK_WDT: Serial.println("Task Watchdog"); break;
+        case ESP_RST_WDT: Serial.println("Other Watchdog"); break;
+        case ESP_RST_DEEPSLEEP: Serial.println("Deep Sleep"); break;
+        case ESP_RST_BROWNOUT: Serial.println("Brownout"); break;
+        case ESP_RST_SDIO: Serial.println("SDIO Reset"); break;
+        default: Serial.println("Unknown"); break;
+    }
+}
+// 🏁 SETUP - Inicialización
+void setup() {
+    Serial.begin(115200);
+    delay(1000); // Esperar a que Serial esté listo
+     printResetReason();
+    Serial.println("   Modo: SPI (Alta Velocidad)");
+    //esp_task_wdt_init(30, false); // 30 segundos
+    checkJTAGPins();
+    // Configurar FreeRTOS
+    setupFreeRTOS();
+    sensors.begin();
+    ble.begin("CarRobot-FreeRTOS");
+    spiMaster.begin();
+
+    Serial.println("🚗 Sistema FreeRTOS iniciado - Tasks ejecutándose");
+    Serial.println("   Core 0: BLE");
+}
+
+// ✅ VERIFICACIÓN PINES JTAG
+void checkJTAGPins() {
+    Serial.println("🔍 Verificando pines JTAG...");
+    
+    gpio_config_t pin_cfg = {};
+    pin_cfg.pin_bit_mask = (1ULL << 39) | (1ULL << 40) | (1ULL << 41) | (1ULL << 42);
+    pin_cfg.mode = GPIO_MODE_INPUT;
+    pin_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+    pin_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    pin_cfg.intr_type = GPIO_INTR_DISABLE;
+    
+    esp_err_t ret = gpio_config(&pin_cfg);
+    
+    if (ret == ESP_OK) {
+        Serial.println("✅ Pines JTAG disponibles para SPI");
+    } else {
+        Serial.printf("❌ Error pines JTAG: 0x%x\n", ret);
+    }
+}
+
+// 🔁 LOOP principal (en Core 1) - Puede usarse para tareas de baja prioridad
+void loop() {
+    // El loop se ejecuta en Core 1 por defecto
+    // Puedes usarlo para tareas no críticas o monitoreo
+    // Llama al gestor de estados para permitir las transiciones automáticas
+    handleSystemState();
+    // Ejemplo de uso de la función de alto nivel
+    vTaskDelay(pdMS_TO_TICKS(50)); // Esperar 100ms sin bloquear el Core 1
+    
+    
+}
