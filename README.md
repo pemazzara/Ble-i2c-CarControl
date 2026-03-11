@@ -22,5 +22,7 @@ Sistema robótico con control BLE, navegación autónoma y evasión de obstácul
 - `1/2/3` - Velocidades
 - `F,L,R` - Calibración de sensores
 
+Recapitulando: El ususario expresa su deseo de velocidad entre 0 y 1000, que para nuestro sistema se convertirá en el intervalo [0, 1]. El sistema debería tener un método de medir la velocidad, en nuestro caso eso sólo ocurre cuando hay un obstáculo visible. Supongamos que ese sea el caso, el sistema mide la tasa de aproximación al objeto (que no sería exactamente la velocidad de aproximación). El control PID se encargaría de ajustar el PWM el motor para minimizar la diferencia entre la tasa medida y la velocidad deseada.
+
 ## 🏗️ Arquitectura
 
