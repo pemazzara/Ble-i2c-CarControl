@@ -1,7 +1,7 @@
 # CarRobot
 # 🚗 CarRobot - Sistema de Control Autónomo
 
-Sistema robótico con control BLE, navegación autónoma y evasión de obstáculos.
+Sistema robótico con control BLE, navegación autónoma y evasión de obstáculos.(En desarrollo)
 
 ## ✨ Características
 
