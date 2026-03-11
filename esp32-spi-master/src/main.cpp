@@ -65,6 +65,7 @@ void spiMasterTask(void *pvParameters);
 void handleSystemState();
 void processStateCommand(char command);
 void checkJTAGPins();
+void speedsToSpeedAngle(int16_t left, int16_t right, int& speed, int& angle);
 
 
 // Instancias globales
@@ -77,6 +78,66 @@ bool autonomousMode = false;
 void handleSystemState();
 void processStateCommand(char command);
 
+void speedsToSpeedAngle(int16_t left, int16_t right, int& speed, int& angle) {
+    // 1. Si ambos son cero, es STOP
+    if (left == 0 && right == 0) {
+        speed = 0;
+        angle = 90;  // Ángulo por defecto, no importa porque speed=0
+        return;
+    }
+
+    // 2. Calcular velocidad media (escala 0-1023)
+    speed = (abs(left) + abs(right)) / 2;
+    if (speed > 1023) speed = 1023;
+
+    // 3. Determinar direcciones individuales
+    bool leftForward = left >= 0;
+    bool rightForward = right >= 0;
+
+    // 4. Calcular factor de giro normalizado entre -1 y 1
+    //    -1 = giro máximo a la izquierda, 1 = giro máximo a la derecha
+    float turnFactor;
+    float maxSpeed = max(abs(left), abs(right));
+    if (maxSpeed == 0) {
+        turnFactor = 0;
+    } else {
+        // La diferencia de velocidades normalizada por la máxima
+        float diff = (right - left) / 2.0f;  // media de la diferencia
+        turnFactor = diff / maxSpeed;
+        // turnFactor queda entre -1 y 1 aproximadamente
+    }
+
+    // 5. Mapear turnFactor a ángulo según el caso
+    if (leftForward && rightForward) {
+        // Ambos adelante: ángulo entre 0° (derecha) y 180° (izquierda)
+        // turnFactor = -1 -> giro izquierda (180°)
+        // turnFactor = 0  -> recto (90°)
+        // turnFactor = 1  -> giro derecha (0°)
+        angle = 90 - (int)(turnFactor * 90);
+    }
+    else if (!leftForward && !rightForward) {
+        // Ambos atrás: ángulo entre 180° y 360°
+        // turnFactor = -1 -> giro izquierda atrás (180°? cuidado)
+        // Realmente queremos que atrás recto sea 270°
+        // Para atrás, el factor de giro invierte el sentido
+        angle = 270 - (int)(turnFactor * 90);
+    }
+    else if (leftForward && !rightForward) {
+        // Giro izquierda sobre el eje (left adelante, right atrás)
+        // Esto debería dar un ángulo cercano a 180°
+        // La magnitud del giro depende de la relación de velocidades
+        float ratio = (float)abs(right) / (float)abs(left);
+        angle = 180 - (int)(90 * ratio);
+    }
+    else if (!leftForward && rightForward) {
+        // Giro derecha sobre el eje (left atrás, right adelante)
+        float ratio = (float)abs(left) / (float)abs(right);
+        angle = (int)(90 * ratio);
+    }
+
+    // 6. Normalizar ángulo a [0, 360)
+    angle = (angle + 360) % 360;
+}
 // 🏁 SETUP - Inicialización
 void setup() {
     Serial.begin(115200);
@@ -484,75 +545,52 @@ void navigationTask(void *pvParameters) {
     ControlCommand_t command;
     SensorData_t sensorData;
     uint32_t navigationCycle = 0;
+    int speed, angle;
     
-    // Configuración de navegación autónoma
-    const uint16_t MIN_SAFE_DISTANCE = 150;  // 15cm mínimo seguro
-    const uint16_t PREFERRED_DISTANCE = 300; // 30cm preferido
-    const uint16_t TURN_THRESHOLD = 50;      // Diferencia de 5cm para girar
+    // Instancia del algoritmo de evasión
+    ObstacleAvoidance obstacleAvoidance;
+    
+    // Configuración inicial (ajusta según tus necesidades)
+    obstacleAvoidance.setStrategy(ObstacleAvoidance::SIMPLE_TURN);
+    obstacleAvoidance.setSafetyDistance(150);   // 15cm
+    obstacleAvoidance.setTurnSpeed(600);        // Velocidad de giro
+    
     vTaskDelay(pdMS_TO_TICKS(100)); 
+    
     for(;;) {
         navigationCycle++;
         
         // Solo operar si el sistema está listo y en modo autónomo
-        if(currentState == STATE_READY && autonomousMode) { 
-      
-            
-            // 2. Obtener datos del sonar de la cola
+        if(autonomousMode) { 
+            // 1. Obtener datos de sensores
             if(xQueuePeek(xSensorQueue, &sensorData, 0) == pdTRUE) {
-                // Actualizar datos TOF (si es necesario)
-                uint16_t leftDistance = sensorData.tofLeft;
-                uint16_t rightDistance = sensorData.tofRight;
-                uint16_t frontDistance = sensorData.tofFront;
-                uint16_t sonarDistance = sensorData.sonarDistance;
-                
-                // 3. LÓGICA DE DECISIÓN AUTÓNOMA
-                uint16_t effectiveFront = min(frontDistance, sonarDistance);
-                
-                // Inicializar comando
+                // 2. Calcular comando usando ObstacleAvoidance
+                ControlOutput output = obstacleAvoidance.calculateCommand(
+                    sensorData.sonarDistance,
+                    sensorData.tofFront,
+                    sensorData.tofLeft,
+                    sensorData.tofRight
+                );
+               
+                // 2. Convertir ControlOutput a ControlCommand_t
                 memset(&command, 0, sizeof(ControlCommand_t));
                 command.timestamp = millis();
-                command.priority = 2; // Prioridad media para navegación
-                command.targetMode = MODE_AUTO; // Siempre AUTO en esta task
-                
-                if(effectiveFront < MIN_SAFE_DISTANCE) {
-    command.type = CMD_STOP;
-    command.priority = 9; 
-    command.speed = 0; // Asegurar velocidad 0
-} 
-else if(effectiveFront < PREFERRED_DISTANCE) {
-    // Lógica de evasión
-    if(sensorData.tofLeft > sensorData.tofRight + TURN_THRESHOLD) {
-        command.type = CMD_DRIVE; // Usamos el tipo genérico que entiende el Slave
-        command.speed = 100;
-        command.angle = 180;  // 180 grados = Giro Izquierda en el mixer
-    } 
-    else if(sensorData.tofRight > sensorData.tofLeft + TURN_THRESHOLD) {
-        command.type = CMD_DRIVE;
-        command.speed = 100;
-        command.angle = 0;    // 0 grados = Giro Derecha en el mixer
-    }
-    else {
-        command.type = CMD_DRIVE;
-        command.speed = 80;
-        command.angle = 270;  // 270 grados = Atrás
-    }
-}
-else {
-    // AVANZAR: Camino despejado
-    command.type = CMD_DRIVE;
-    command.angle = 90; // 90 grados = Adelante
-    
-    // Velocidad proporcional: cuanto más espacio, más rápido
-    if(effectiveFront > 600) command.speed = 180;
-    else command.speed = 120;
-}
-                
-                // 4. Enviar comando a la cola de control
+                command.priority = output.priority;
+                command.targetMode = MODE_AUTO;
+
+                // 3. Convertir velocidades diferenciales a speed/angle
+                speedsToSpeedAngle(output.leftSpeed, output.rightSpeed, speed, angle);
+                command.type = (speed == 0) ? CMD_STOP : CMD_DRIVE;
+                command.speed = speed;
+                command.angle = angle;
+                command.priority = output.priority;
+                                
+                // 3. Enviar comando a la cola de control
                 if(xQueueSend(xControlQueue, &command, 0) != pdTRUE) {
                     Serial.println("⚠️ Cola de navegación llena - Comando descartado");
-                } else if (navigationCycle % 10 == 0) { // Log cada 10 ciclos
-                    Serial.printf("🧭 Ciclo %d - Comando enviado: 0x%02X\n", 
-                                 navigationCycle, command.type);
+                } else if (navigationCycle % 5 == 0) { // Log cada 5 ciclos
+                    Serial.printf("🧭 Ciclo %d - Comando: type=0x%02X, speed=%d, angle=%d\n", 
+                                 navigationCycle, command.type, command.speed, command.angle);
                 }
             }
             else {
@@ -560,12 +598,6 @@ else {
                 if (navigationCycle % 20 == 0) {
                     Serial.println("⚠️ Navigation: Sin datos de sensores");
                 }
-            }
-        }
-        else if (autonomousMode && currentState != STATE_READY) {
-            // Modo auto activado pero sistema no listo
-            if (navigationCycle % 50 == 0) {
-                Serial.printf("🧭 Esperando estado READY (actual: %d)\n", currentState);
             }
         }
         
@@ -656,10 +688,12 @@ void bleTask(void *pvParameters) {
             } 
             // 2. Si no es emergencia, verificamos el modo
             else if (cmd.targetMode == MODE_MANUAL) {
+                autonomousMode = false;  // Desactivar modo autónomo
                 xQueueSend(xControlQueue, &cmd, 0);
             } 
             // 3. Si es autónomo y NO es un heartbeat, avisamos que ignoramos el comando
-            else if (cmd.type != CMD_HEARTBEAT) {
+            else if (cmd.type != CMD_HEARTBEAT && cmd.targetMode == MODE_AUTO) {
+                autonomousMode = true; // Activamos modo autónomo
                 Serial.println("⚠️ Modo Autónomo activo - Comando manual ignorado");
             }          
         }           

@@ -77,9 +77,6 @@ void bleTask(void *pvParameters);
     void i2cTask(void *pvParameters);
 #endif
 
-void handleSystemState();
-void processStateCommand(char command);
-void checkJTAGPins();
 
 // Estructuras de datos para comunicación entre tasks
 struct SensorData {
@@ -102,6 +99,7 @@ SensorData dataSensors;
 bool autonomousMode = false;
 void handleSystemState();
 void processStateCommand(char command);
+void checkJTAGPins();
 
 // ✅ SETUP FREERTOS SIMPLIFICADO
 void setupFreeRTOS() {
