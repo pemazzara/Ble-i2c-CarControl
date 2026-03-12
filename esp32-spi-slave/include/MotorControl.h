@@ -48,7 +48,8 @@ definiciones.*/
 #include <Arduino.h>
 #include <Wire.h>
 #include "SPIDefinitions.h"
-#include "SonarIntegration.h"
+//#include "SonarIntegration.h"
+#include "UltraSonicMeasure.h"
 #include "driver/ledc.h"
 #include "driver/gpio.h"
 #include <math.h>
@@ -122,7 +123,8 @@ public:
     void begin(); 
     void handleSPICommand(const ControlCommand_t* cmd);
     void updateRamping(); // El "corazón" del movimiento suave
-    void setDrive(int16_t left, int16_t right, bool immediate);
+    void setDrive(float targetAvel, int16_t angle, bool immediate);
+    void setPWM(int16_t pwm, int16_t angle, bool immediate);
     void setSpeed(int speedA, int speedB);
     void emergencyStop();
     void setSpeedDirect(int16_t left, int16_t right);

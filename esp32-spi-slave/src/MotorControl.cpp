@@ -146,68 +146,37 @@ void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
     }
 }
 
-void MotorControl::setDrive(int16_t targetSpeed, int16_t angle, bool immediate) {
-    if (!ledc_initialized) {
-        Serial.println("❌ ERROR: MotorControl no inicializado");
-        return;
-    }
-    // Filtro de seguridad: Si la velocidad es absurda, es basura de SPI
-    if (abs(targetSpeed) > 1023 || abs(angle) > 360) return;
-
-    // 1. AJUSTE DE ÁNGULO: Si el Master envía 0 como "adelante", 
-    // pero tu fórmula trigonométrica usa 0 como "derecha", sumamos 90.
-    // Si los giros están invertidos, cambiamos el signo del ángulo aquí.
-    float rad = (angle * M_PI) / 180.0; 
-
-    float x = cos(rad); // Componente de giro
-    float y = sin(rad); // Componente de avance
+void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
+    if (!ledc_initialized) return;
+    if (abs(angle) > 360) return;
     
-    // 2. CÁLCULO DE POTENCIA
-    // Invertimos el signo de 'x' si el giro sigue al revés
-
-    int16_t rawLeft = (y - x) * targetSpeed; 
-    int16_t rawRight = (y + x) * targetSpeed;
-
-    float factorInterior = 0.4f;
-
-// 2. Solo aplicamos el suavizado si hay intención de giro (signos opuestos)
-if (rawLeft * rawRight < 0) {
-    // CASO A: AVANCE (Ángulo < 180 en el Master)
-    // Queremos que la rueda negativa se vuelva positiva atenuada
-    if (y>=0) {
-        if (rawLeft < 0) rawLeft  = -rawLeft  * factorInterior;
-        else rawRight = -rawRight * factorInterior;
-    } 
-    // CASO B: RETROCESO (y<0 en el Master)
-    // Queremos que la rueda positiva se vuelva negativa atenuada (para retroceder curveando)
-    else {
-        if (rawLeft > 0)  rawLeft  = -rawLeft  * factorInterior;
-        else rawRight = -rawRight * factorInterior;
-    }
-}
-    // Si tienen el mismo signo (ambos adelante o ambos atrás), no tocamos nada.
-    // 3. RESOLUCIÓN PWM:
-    // Si configuraste el PWM a 10 bits, el máximo es 1023.
-    // Si es a 8 bits, es 255. Ajusta este valor al tuyo.
-    const int MAX_VAL = 1023; 
+    float rad = (angle * M_PI) / 180.0;
+    float x = cos(rad);
+    float y = sin(rad);
+    
+    int16_t rawLeft = (y - x) * pwm;
+    int16_t rawRight = (y + x) * pwm;
+    
+    const int MAX_VAL = 1023;
     rawLeft = constrain(rawLeft, -MAX_VAL, MAX_VAL);
     rawRight = constrain(rawRight, -MAX_VAL, MAX_VAL);
-
-    lastUpdateTime = millis();
-    if (immediate || targetSpeed == 0) {
+    
+    if (immediate || pwm == 0) {
         targetLeftSpeed = 0;
         targetRightSpeed = 0;
         currentLeftSpeed = 0;
         currentRightSpeed = 0;
         applyHardwarePWM(0, 0);
-    }else{
+    } else {
         targetLeftSpeed = rawLeft;
-        targetRightSpeed = rawRight;  
+        targetRightSpeed = rawRight;
+        lastUpdateTime = millis();
     }
 }
+
 void MotorControl::updateRamping() {
     if (!ledc_initialized) return;
-            /* 1. Verificar emergencia ANTES de mover motores
+        /* 1. Verificar emergencia ANTES de mover motores
         if (sonar && sonar->isEmergency()) {
             if (!emergencyStopActive) {
                 Serial.println("🛑 ¡EMERGENCIA! Parando motores");
@@ -352,12 +321,12 @@ void MotorControl::handleSPICommand(const ControlCommand_t* cmd) {
         this->targetRightSpeed = 0;
         this->currentLeftSpeed = 0; // Parada instantánea en emergencia
         this->currentRightSpeed = 0;
-        this->setDrive(0, 0, true); // Frenado inmediato
+        this->setPWM(0, 0, true); // Frenado inmediato
         return;
     }
 
     if (cmd->type == CMD_DRIVE) {
-        this->setDrive(cmd->speed, cmd->angle, false);
+        this->setPWM(cmd->speed, cmd->angle, false);
     }          
 }
 
@@ -452,43 +421,7 @@ void MotorControl::setMotorSpeeds(int leftSpeed, int rightSpeed) {
 void MotorControl::resetSafetyTimer() {
     lastUpdateTime = millis();
 }
-/*
-void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
-    // 1. Escalar de 8 bits (Master) a 10 bits (Slave)
-    // 255 * 4 = 1020 (cerca de 1023)
-    uint32_t dutyLeft = abs(left) * 4;
-    uint32_t dutyRight = abs(right) * 4;
 
-    if (dutyLeft > MAX_DUTY_CYCLE) dutyLeft = MAX_DUTY_CYCLE;
-    if (dutyRight > MAX_DUTY_CYCLE) dutyRight = MAX_DUTY_CYCLE;
-
-    // 2. Lógica Motor Izquierdo (ENA, IN1, IN2)
-    if (left > 0) { // Adelante
-        digitalWrite(IN1, HIGH);
-        digitalWrite(IN2, LOW);
-    } else if (left < 0) { // Atrás
-        digitalWrite(IN1, LOW);
-        digitalWrite(IN2, HIGH);
-    } else { // Parada
-        digitalWrite(IN1, LOW);
-        digitalWrite(IN2, LOW);
-    }
-    ledcWrite(LEDC_CH_A, dutyLeft);
-
-    // 3. Lógica Motor Derecho (ENB, IN3, IN4)
-    if (right > 0) { // Adelante
-        digitalWrite(IN3, HIGH);
-        digitalWrite(IN4, LOW);
-    } else if (right < 0) { // Atrás
-        digitalWrite(IN3, LOW);
-        digitalWrite(IN4, HIGH);
-    } else { // Parada
-        digitalWrite(IN3, LOW);
-        digitalWrite(IN4, LOW);
-    }
-    ledcWrite(LEDC_CH_B, dutyRight);
-}
-  */  
 bool MotorControl::isSafetyTimeout() {
     unsigned long elapsed = millis() - lastUpdateTime;
     

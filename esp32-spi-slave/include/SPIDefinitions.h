@@ -5,14 +5,6 @@
 #include <stdint.h>
 #include <Arduino.h>
 
-
-// Pines HSPI ESP32-S3
-// Configuración óptima para ESP32-S3
-#define SPI_MASTER_CLK  39   
-#define SPI_MASTER_MISO 40     
-#define SPI_MASTER_MOSI 41   
-#define SPI_MASTER_SS   42
-
 // --- CONSTANTES ---
 #define SPI_MAGIC_MASTER 0xA5
 #define SPI_MAGIC_SLAVE  0x5A
@@ -52,9 +44,14 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t status;         // Estado del sistema (bits de error, etc)
     uint16_t distance;      // Distancia del sonar (mm)
+    uint16_t a_vel;  // Telemetría motores
     int16_t left_speed;     // Telemetría motores
-    int16_t right_speed;    
-    uint8_t reserved[7];    // Padding para llegar a 14 bytes y ser simétrico
+    int16_t right_speed;
+    uint8_t avel_scaled_low;  // Velocidad de acercamiento escalada
+    uint8_t avel_scaled_high;
+    uint8_t error_scaled_low; // Error del PID escalado
+    uint8_t error_scaled_high;
+    uint8_t reserved[1];    // Padding para llegar a 14 bytes y ser simétrico
 } SPIResponsePayload_t;
 
 // --- FRAMES (La envoltura que viaja por el cable) ---
@@ -77,8 +74,9 @@ typedef struct __attribute__((packed)) {
 
 typedef struct {
     uint16_t sonarDistance;
+    uint16_t a_vel;  // velocidad de acercamiento (adimen) positivo si se aleja, negativo si se acerca
     uint16_t tofLeft;
-    uint16_t tofFront;
+    uint16_t tofFront;  
     uint16_t tofRight;   
     uint32_t lastSonarUpdate;
     uint32_t lastTofUpdate;   
@@ -89,7 +87,7 @@ typedef struct {
 
 typedef struct {
     uint16_t distance;
-    uint16_t duration;
+    uint16_t a_vel; // Velocidad de acercamiento (mm/s)
     bool emergency;
     bool sensor_ok;
     uint32_t timestamp;

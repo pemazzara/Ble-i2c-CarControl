@@ -4,7 +4,8 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "MotorControl.h"
-#include "SonarIntegration.h"
+#include "UltraSonicMeasure.h"
+#include "SpeedController.h"
 #include "SPISlave.h"
 #include "SPIDefinitions.h"
 #include "esp_task_wdt.h"
@@ -16,7 +17,7 @@
 // =========================================================
 //SonarSensorData_t g_sensorData = {0, false};  
 MotorControl motorController;
-SonarIntegration sonar;
+UltraSonicMeasure sonar;
 SPISlave spiSlave(motorController, sonar); 
 
 // =========================================================
@@ -152,13 +153,13 @@ void sonarTask(void* pvParameters) {
             measurement_count++;
             
             // Actualizar datos del sensor
-            //sonar.triggerAndReadRMT();
+            //sonar.sonarApproachRateRMT();
             sonar.update();
             // Verificar emergencia
             if (sonar.isEmergency()) {
                 motorController.emergencyStop();
                 Serial.printf("🚨 EMERGENCIA SONAR: %dmm\n", 
-                             sonar.getLastDistance());
+                             (int)sonar.sonarApproachRateRMT());
             }
     
         }
@@ -166,7 +167,53 @@ void sonarTask(void* pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+void motorTask(void *pvParameters) {
+    esp_task_wdt_add(NULL);  
+    SpeedController controller;
+    // Variables locales para optimizar stack
+    uint32_t last_stack_check = 0;
+    uint32_t last_spi_check = 0;
+    uint32_t last_ramp_update = 0;
+    uint32_t command_count = 0;
+    uint32_t last_valid_command_ms = millis();
+    
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50Hz
+    
+    while(1) {
+        esp_task_wdt_reset();
+        uint32_t now = millis();
+        static uint32_t stop_until = 0;
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        
+        // 1. Verificar si hay nuevo comando del Master
+        if (SPISlave::isCommandReady()) {
+            ControlCommand_t cmd = SPISlave::getLastCommand();
+            controller.setTargetFromMaster(cmd);
+            // Señalar que hemos procesado el comando
+            SPISlave::commandProcessed();
+            last_valid_command_ms = now; // Actualizar cada vez que llega algo del Master
+        }
+        
+        // 2. Actualizar control PID
+        controller.updateControl();
 
+        // --- WATCHDOG DE SEGURIDAD SPI ---
+        if (now - last_valid_command_ms > 500) {
+            // Si el Master no ha dicho nada en 0.5s, paramos por seguridad
+            motorController.setPWM(0, 0, true);
+        }
+
+        // 3. Actualizar rampas de motor (50Hz)
+        if (now - last_ramp_update >= 20) {
+            last_ramp_update = now;
+            motorController.updateRamping();
+        }
+        
+    }
+}
+
+/*
 void motorTask(void* pvParameters) {
     esp_task_wdt_add(NULL);
     Serial.println("[MotorTask] Iniciada");
@@ -208,7 +255,7 @@ void motorTask(void* pvParameters) {
         // 4. Pausa mínima
         vTaskDelay(pdMS_TO_TICKS(5));
     }
-}
+}*/
 
 void spiSlaveTask(void* pvParameters) {
     esp_task_wdt_add(NULL);
@@ -295,7 +342,7 @@ void logSystemStatus() {
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 5000) {
         // Usar las nuevas estructuras, no las viejas
-        Serial.printf("[Status] Sonar: %dmm | ", sonar.getLastDistance());
+        Serial.printf("[Status] Sonar: %dmm | ", (int)sonar.sonarApproachRateRMT());
         Serial.printf("Motor: L=%d, R=%d\n", 
                      motorController.getCurrentLeft(),
                      motorController.getCurrentRight());

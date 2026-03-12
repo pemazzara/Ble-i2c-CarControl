@@ -34,22 +34,14 @@ typedef enum : uint8_t {
     MODE_AUTO = 3,   
 } ControlMode;
 
-// --- PAYLOADS (Los datos puros sin envoltura) ---
-    /*
-fun toByteArrayWithBuffer(): ByteArray {
-        val buffer = ByteBuffer.allocate(14)
-            .order(ByteOrder.LITTLE_ENDIAN)
-        buffer.put(type.value)                     // [0]
-        buffer.putShort(speed.toShort())           // [1-2]
-        buffer.putShort(angle.toShort())           // [3-4]
-        buffer.putShort(distance.toShort())        // [5-6]
-        buffer.putShort(timestamp.toShort())       // [7-10]
-        buffer.put(priority)                       // [11]
-        buffer.put(status)                         // [12]
-        buffer.put(targetMode.value)               // [13]
-
-        return buffer.array()
-    } */
+// Estructura de bits para el byte de confianza
+struct ConfidenceByte {
+    bool sonar_ok     : 1; // Bit 0: Sonar activo y en rango
+    bool tof_f_ok     : 1; // Bit 1: TOF Frontal activo
+    bool discrepancy  : 1; // Bit 2: Sonar y TOF no coinciden
+    bool source       : 2; // Bits 3-4: 0=Ninguno, 1=Sonar, 2=TOF, 3=Fused
+    uint8_t reserved  : 3; 
+};
 // Master -> Slave (14 bytes)
 typedef struct __attribute__((packed)) {
     uint8_t type;          // ControlCommandType

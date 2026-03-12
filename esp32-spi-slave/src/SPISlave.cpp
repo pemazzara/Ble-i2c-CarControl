@@ -1,8 +1,6 @@
 // SPISlave.cpp - CORREGIR VERSION CRÍTICA
 #include "SPISlave.h"
 #include <driver/spi_slave.h>
-#include "SPIDefinitions.h"
-#include "SonarIntegration.h"
 #include <algorithm> // Añade esto al inicio de tu archivo si no está
 #include "freertos/semphr.h" // Header necesario
 
@@ -17,10 +15,13 @@ SemaphoreHandle_t SPISlave::response_mutex = NULL;
 ControlCommand_t SPISlave::last_command = {0};
 SPIResponseFrame_t SPISlave::last_response = {0};
 extern uint16_t calcularChecksum(const void* data, size_t len);
-extern SonarIntegration sonar;
+extern UltraSonicMeasure sonar;
+// Cambiar la declaración de speedCtrl a un puntero o referencia, 
+// y verificar que esté inicializado con un método isReady().
+extern SpeedController* pSpeedCtrl;
 SonarSensorData_t sensor_data;
 
-SPISlave::SPISlave(MotorControl &motor, SonarIntegration &sensor) {
+SPISlave::SPISlave(MotorControl &motor, UltraSonicMeasure &sensor) {
     // Guardamos la dirección de los objetos
     this->motor_controller = &motor;
     this->sensor_manager = &sensor;
@@ -148,6 +149,7 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
     if (motor_controller == nullptr || sensor_manager == nullptr) {
         return; 
     }
+
     // 🛡️ GUARDIA 3: Semáforo
     if (xSemaphoreTake(response_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
 
@@ -157,11 +159,26 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
     if (motor_controller != nullptr && motor_controller->isInitialized()) {
         txFrame.payload.left_speed = motor_controller->getCurrentLeft();
         txFrame.payload.right_speed = motor_controller->getCurrentRight();
-        //txFrame.payload.distance = sensor_manager->readDistance();
+        //txFrame.payload.distance = sensor_manager->getLastDistance();
         txFrame.payload.status = motor_controller->getMotorStatus();
+        // Si el controlador está disponible, añadir datos
+        if (pSpeedCtrl != nullptr) {
+            float avel = pSpeedCtrl->getCurrentAvel();
+            float error = pSpeedCtrl->getLastError();
+
+            // Escalar y limitar
+            int16_t avel_scaled = (int16_t)constrain(avel * 1000, -32768, 32767);
+            int16_t error_scaled = (int16_t)constrain(error * 1000, -32768, 32767);
+        
+            // Empaquetar (cuidado con el endianness)
+            txFrame.payload.avel_scaled_low = avel_scaled & 0xFF;
+            txFrame.payload.avel_scaled_high = (avel_scaled >> 8) & 0xFF;
+            txFrame.payload.error_scaled_low = error_scaled & 0xFF;
+            txFrame.payload.error_scaled_high = (error_scaled >> 8) & 0xFF;
+        }
         
         if (motor_controller->getTargetLeft() == 0 && motor_controller->getTargetRight() == 0) {
-            txFrame.payload.status |= 0x01;
+            txFrame.payload.status |= 0x01; // Bit 0: motores parados
         }
     } else {
         txFrame.payload.status = 0x80; // Error: No vinculado o no inicializado
@@ -172,6 +189,12 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
         SonarSensorData_t s_data;
         if (sensor_manager->getLatestSonarData(s_data)) {
             txFrame.payload.distance = s_data.distance; 
+            txFrame.payload.a_vel = (uint16_t)(s_data.a_vel < 0 ? -s_data.a_vel : s_data.a_vel); // valor absoluto de la velocidad
+            // Opcional: indicar dirección en el campo status
+            // Dirección: bit 5 = 1 si acercándose (avel negativo)
+            if (s_data.a_vel < 0) { txFrame.payload.status |= 0x20; // Bit 5 = acercándose
+            } else { txFrame.payload.status &= ~0x20; // limpiar bit (opcional)
+            }
             if (s_data.distance > 0 && s_data.distance < 50) txFrame.payload.status |= 0x04; // Bit 4: Obstáculo Ultra-cercano
             if (!s_data.sensor_ok) txFrame.payload.status |= 0x08; // Bit 3: Error de hardware Sonar
         }

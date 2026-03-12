@@ -143,48 +143,48 @@ bool SPIMaster::getCleanSensorData(uint16_t &dist, uint8_t &st) {
 
 bool SPIMaster::requestSensorData() {
     if (!initialized) return false;
-    extern QueueHandle_t xSensorQueue;
-    SensorData_t sensorData;
+    extern SemaphoreHandle_t sensorMutex;
+    extern SensorData_t globalSensorData;
+
+    // 1. Definir variables temporales para la lectura SPI
     uint16_t dist = 0;
     uint8_t stat = 0;
-    // 1. Preservar datos TOF existentes
-    if (xQueuePeek(xSensorQueue, &sensorData, 0) == pdTRUE) {
-        memset(&sensorData, 0, sizeof(SensorData_t));
-        // Guardamos los TOF que ya teníamos
-        uint16_t tofFront = sensorData.tofFront;
-        uint16_t tofLeft = sensorData.tofLeft;
-        uint16_t tofRight = sensorData.tofRight;
-        // 2. Leer sensores del Slave
-        if (getCleanSensorData(dist, stat)) {
-            // Actualizar solo lo que corresponde al Slave
-            sensorData.sonarDistance = dist;
-            sensorData.lastSonarUpdate = millis();
-            sensorData.sensorStatus |= (1 << 0); // Bit 0 = Sonar OK
-            // El Slave también puede reportar una emergencia interna en 'stat'
-        if (stat & 0x80) sensorData.emergency = true;
-            // Restaurar TOFs
-            sensorData.tofFront = tofFront;
-            sensorData.tofLeft = tofLeft;
-            sensorData.tofRight = tofRight;
-            
-            // Actualizar cola
-            xQueueOverwrite(xSensorQueue, &sensorData);
-            
-            // Evaluar emergencias
-            evaluarEmergenciaInmediata(sensorData);
-            return true;
-        } else {
-            // Marcar error de sensor
-            sensorData.sensorStatus &= ~(1 << 0); // Clear bit 0
-            xQueueOverwrite(xSensorQueue, &sensorData);
-            return false;
+
+    // 2. Realizar la comunicación SPI (fuera del mutex para no bloquear el sistema)
+    if (!getCleanSensorData(dist, stat)) {
+        // Si falla el SPI, entramos un momento para marcar el error
+        if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+            globalSensorData.sensorStatus &= ~(1 << 0); // Sonar OFF
+            xSemaphoreGive(sensorMutex);
         }
+        return false;
     }
-    
+
+    // 3. Si el SPI fue exitoso, actualizamos la estructura global
+    if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        
+        // ACTUALIZACIÓN SELECTIVA:
+        // No necesitamos "preservar" los TOF manualmente porque NO vamos a 
+        // sobreescribir toda la estructura, solo los campos del Sonar.
+        
+        globalSensorData.sonarDistance = dist;
+        globalSensorData.lastSonarUpdate = millis();
+        globalSensorData.sensorStatus |= (1 << 0); // Bit 0 = Sonar OK
+        globalSensorData.slaveInternalStatus = stat; // Guardamos el status crudo del slave
+
+        // Evaluar emergencias (el bit 0x80 del slave o distancias críticas)
+        if (stat & 0x80) globalSensorData.emergency = true;
+        
+        evaluarEmergenciaInmediata(globalSensorData);
+
+        xSemaphoreGive(sensorMutex);
+        return true;
+    }
+
     return false;
 }
-
-
+            
+            
 void SPIMaster::evaluarEmergenciaInmediata(const SensorData_t &sd) {
     bool peligro = false;
 
@@ -237,30 +237,7 @@ void SPIMaster::handleCommunicationErrors(uint8_t magic) {
             break;
     }
 }
-/*
-bool SPIMaster::sendCommandWithTimeout(const ControlCommand_t* cmd, uint32_t timeout_ms) {
-    // 1. Limpiar el frame
-    memset(&master_tx_buffer, 0, sizeof(SPIFrame_t));
-    
-    // 2. Sello de inicio
-    master_tx_buffer.magic_word = SPI_MAGIC_MASTER; // Usar la constante 0xA5
-    
-    // 3. Copiar el comando íntegro (14 bytes)
-    memcpy(&master_tx_buffer.payload, cmd, sizeof(ControlCommand_t));
-    
-    // 4. Calcular la suma de los 14 bytes del payload
-    //master_tx_buffer.checksum = calcularChecksum(&master_tx_buffer.payload, sizeof(ControlCommand_t));
-    master_tx_buffer.checksum = calcularChecksum(&master_tx_buffer, sizeof(SPIFrame_t) - 2);
-    // 5. Configurar transacción por el tamaño total del FRAME (17 bytes)
-    spi_transaction_t trans;
-    memset(&trans, 0, sizeof(trans));
-    trans.length = sizeof(SPIFrame_t) * 8; // 17 bytes * 8 bits = 136 bits
-    trans.tx_buffer = &master_tx_buffer;
-    trans.rx_buffer = &master_rx_buffer;
 
-    return (spi_device_transmit(spi, &trans) == ESP_OK);
-}
-*/
 bool SPIMaster::sendCommand(const ControlCommand_t *cmd) {
     if (!cmd || !initialized) return false;
     if (cmd->type == CMD_DRIVE) {

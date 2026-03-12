@@ -1,6 +1,5 @@
-// Arduino - SonarIntegration.h
-#ifndef SONAR_INTEGRATION_H
-#define SONAR_INTEGRATION_H
+#ifndef ULTRASONIC_MEASURE_H
+#define ULTRASONIC_MEASURE_H
 
 #include <Arduino.h>
 #include "SPIDefinitions.h"
@@ -15,20 +14,20 @@ const uint8_t EMERGENCY_THRESHOLD = 3; // 3 lecturas seguidas
 //#define RMT_TX_CHANNEL RMT_CHANNEL_0  // Canal para el Trigger
 #define RMT_RX_CHANNEL RMT_CHANNEL_4  // Canal para el Echo
 #define RMT_CLK_DIV 80                 // 80MHz / 80 = 1 tick por microse
-class SonarIntegration {
+class UltraSonicMeasure {
 public:
-    SonarIntegration(uint8_t trigPin = SONAR_TRIG_PIN, 
-                     uint8_t echoPin = SONAR_ECHO_PIN);
+    UltraSonicMeasure(uint8_t trigPin = SONAR_TRIG_PIN, 
+                       uint8_t echoPin = SONAR_ECHO_PIN);
     
     void begin();
-    uint16_t triggerAndReadRMT();
+    float sonarApproachRateRMT();
     bool isEmergency();
     bool isSensorOK();
     void updateSonarData();
     void update();
     // Getters                // Diagnóstico
     bool getLatestSonarData(SonarSensorData_t &data);
-    uint16_t getLastDistance();
+    float getApproachSpeed(); // Velocidad de aproximación (cm/s o mm/s)
     bool initialized;
 private:
     uint8_t SONAR_TRIG;
@@ -36,6 +35,12 @@ private:
     SonarSensorData_t sonar_data;
     SemaphoreHandle_t data_mutex;
     uint16_t duration = 0;
+    // Para cálculo de velocidad
+    uint16_t lastSonarDistance = 0;
+    uint32_t lastSonarTime = 0;
+    uint32_t lastRawTime = 0;
+    uint8_t filterIndex = 0;
+    float approachSpeed = 0; // Velocidad de aproximación
     uint16_t distanceBuffer[FILTER_SIZE];
     uint8_t emergency_counter = 0;
 };

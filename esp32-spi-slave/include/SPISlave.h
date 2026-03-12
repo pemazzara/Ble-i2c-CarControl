@@ -5,7 +5,8 @@
 #include <driver/spi_slave.h> // ⚠️ Driver nativo de ESP-IDF
 #include "SPIDefinitions.h"
 #include "MotorControl.h"
-#include "SonarIntegration.h"
+#include "SpeedController.h"
+#include "UltraSonicMeasure.h"
 #include "freertos/semphr.h"
 
 
@@ -19,8 +20,8 @@
 class SPISlave {
 private:
     MotorControl* motor_controller;
-    SonarIntegration* sensor_manager;
-    //SonarIntegration& sonarIntegration;
+    UltraSonicMeasure* sensor_manager;
+    SpeedController* pSpeedCtrl;
     // Handle para el driver
     spi_host_device_t spi_host;
     spi_slave_transaction_t transaction; // Transacción persistente
@@ -38,6 +39,7 @@ private:
     
      // Variables de estado
     static ControlCommand_t last_command;
+    //static SpeedController* speedCtrl;
     static SPIResponseFrame_t last_response;
     // Pone los datos en el buffer DMA y le dice al hardware "Listos para recibir"
     void queueNextTransaction();
@@ -53,7 +55,7 @@ private:
     
 
 public:
-    SPISlave(MotorControl &motor, SonarIntegration &sensor); // El constructor sigue recibiendo refs
+    SPISlave(MotorControl &motor, UltraSonicMeasure &sensor); // El constructor sigue recibiendo refs
     bool init();
     void processSPICommunication();
     void processCommand(const SPIFrame_t&);
@@ -76,10 +78,6 @@ public:
     void printStats();
     void validateBuffers();
 
-private:
-    //spi_slave_transaction_t current_trans;
-    // Lógica de negocio (tu código original adaptado)
-    //void processCommand(const SPIFrame_t &frame);
 };
 
 // Task de SPI Slave
@@ -87,69 +85,3 @@ private:
 
 #endif
 
-/*
-#ifndef SPI_SLAVE_H
-#define SPI_SLAVE_H
-
-#include <Arduino.h>
-#include <driver/spi_slave.h> // ⚠️ Driver nativo de ESP-IDF
-#include "SPIDefinitions.h"
-#include "MotorControl.h"
-#include "SonarIntegration.h"
-
-class SPISlave {
-private:
-    MotorControl* motorController;
-    SonarIntegration* sonarIntegration;
-    bool initialized = false;
-    spi_slave_transaction_t transactions[3]; // Una por cada slot de la cola
-    int transaction_index = 0;
-    // Buffers para DMA (deben ser accesibles por el hardware)
-    // Se definen en el .cpp para asegurar alineación, aquí usamos punteros
-    static SPIFrame_t* spi_tx_buffer; 
-    static SPIFrame_t* spi_rx_buffer;
-    // Sincronización entre tasks
-    static SemaphoreHandle_t response_mutex;
-    static SemaphoreHandle_t cmd_ready_sem;
-    static SemaphoreHandle_t data_ready_sem;
-    static SemaphoreHandle_t buffer_mutex;
-    // Variables de estado
-    static ControlCommand_t last_command;
-    static SPIResponseFrame_t last_response;
-    // Handle para el driver
-    spi_host_device_t spi_host;
-
-public:
-    SPISlave(MotorControl &motor, SonarIntegration &sonar);
-    
-    // Configura el hardware SPI + DMA
-    void begin();
-    
-    // Revisa si el hardware terminó una transacción y prepara la siguiente
-    void processSPICommunication();
-
-    typedef struct {
-        uint16_t distance;
-        bool emergency;
-    } SensorReadout_t;
-    
-    bool getLatestSensorData(SonarSensorData_t &outData);
-    void checkHealth();
-    void printStats();
-    void validateBuffers();
-
-private:
-    // Pone los datos en el buffer DMA y le dice al hardware "Listos para recibir"
-    void queueNextTransaction();
-    void prepareNextResponse();
-    spi_slave_transaction_t current_trans;
-    // Lógica de negocio (tu código original adaptado)
-    void processCommand(const SPIFrame_t &frame);
-    void prepareResponse(SPIResponseFrame_t &frame);
-};
-
-// Task de SPI Slave
-void spiSlaveTask(void *pvParameters);
-
-#endif
-*/
