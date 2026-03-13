@@ -1,4 +1,3 @@
-# CarRobot
 # 🚗 CarRobot - Sistema de Control Autónomo
 Se desrrolla en dos etapas: 1.-Elemental para hobistas en los directorios: arduino-slave y esp32-master. 2.-(En desarrollo) Riguroso para estudiosos de los sitemas de control en los direrctorios: esp32-spi-master y esp32-spi-slave
 
