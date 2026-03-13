@@ -18,4 +18,5 @@ La idea es llegar a un sistema robótico con control BLE, navegación autónoma 
 Caso 1.-Comandos simples:  - `F` - Adelante
 Caso 2. Comandos estructurados: tipo, velocidad, ángulo. 
  
- Para mas detalles ver Wiki del proyecto
+ Para mas detalles ver Wiki del proyecto en: 
+ https://github.com/pemazzara/CarRobot/wiki
