@@ -197,7 +197,7 @@ void motorTask(void *pvParameters) {
         
         // 2. Actualizar control PID
         controller.updateControl();
-
+        
         // --- WATCHDOG DE SEGURIDAD SPI ---
         if (now - last_valid_command_ms > 500) {
             // Si el Master no ha dicho nada en 0.5s, paramos por seguridad

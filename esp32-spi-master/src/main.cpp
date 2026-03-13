@@ -508,11 +508,19 @@ void navigationTask(void *pvParameters) {
         
         // 1. Fusión de sensores (Pasamos la estructura global protegida)
         uint16_t front_dist = 0;
+        uint16_t left_dist = 0;
+        uint16_t right_dist = 0;
         if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            front_dist = fuseFrontalDistances(globalSensorData); 
+            front_dist = fuseFrontalDistances(globalSensorData);
+            left_dist = globalSensorData.tofLeft;
+            right_dist = globalSensorData.tofRight;
             xSemaphoreGive(sensorMutex);
         }
-
+        if (left_dist > 0 && right_dist > 0) {
+            aligner.setSideSensors(left_dist, right_dist);
+        } else {
+            aligner.disableSideSensors();
+        }
         // 2. Lógica de Decisión
         if (autonomousMode && front_dist < 500 && front_dist > 0) { 
             // Hay obstáculo: Calculamos ángulo óptimo x3*

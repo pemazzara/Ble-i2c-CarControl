@@ -1,7 +1,8 @@
 # CarRobot
 # 🚗 CarRobot - Sistema de Control Autónomo
+Se desrrolla en dos etapas: 1.-Elemental para hobistas en los directorios: arduino-slave y esp32-master. 2.-(En desarrollo) Riguroso para estudiosos de los sitemas de control en los direrctorios: esp32-spi-master y esp32-spi-slave
 
-Sistema robótico con control BLE, navegación autónoma y evasión de obstáculos.(En desarrollo)
+La idea es llegar a un sistema robótico con control BLE, navegación autónoma y evasión de obstáculos:
 
 ## ✨ Características
 
@@ -17,7 +18,5 @@ Sistema robótico con control BLE, navegación autónoma y evasión de obstácul
 
 Caso 1.-Comandos simples:  - `F` - Adelante
 Caso 2. Comandos estructurados: tipo, velocidad, ángulo. 
-
-
-## 🏗️ Arquitectura
-
+ 
+ Para mas detalles ver Wiki del proyecto

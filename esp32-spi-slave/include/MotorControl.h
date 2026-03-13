@@ -82,7 +82,9 @@ definiciones.*/
 
 class MotorControl {
 private:
-// ✅ AGREGAR protección contra cambios bruscos
+    float currentInterpolatedAngle = 90.0f;
+    const float ANGLE_SLEW_RATE = 2.0f; // Grados por cada actualización (suavizado)
+    // ✅ AGREGAR protección contra cambios bruscos
     const int MAX_ACCELERATION = 50; // Incremento máximo por ciclo
     const int MAX_SAFE_SPEED = 800;
     //SonarIntegration* sonar;  // Puntero o referencia al sonar
@@ -96,6 +98,9 @@ private:
     int currentMode = MODE_MANUAL;
     int16_t currentLeftSpeed = 0;
     int16_t currentRightSpeed = 0;
+    int16_t targetPWM = 0;
+    int16_t targetAngle = 90; // Ángulo objetivo recibido del Master
+    int16_t currentRampedPWM = 0;
     // Velocidades deseadas (las que llegan por SPI)
     int16_t targetLeftSpeed = 0;
     int16_t targetRightSpeed = 0;
@@ -123,7 +128,8 @@ public:
     void begin(); 
     void handleSPICommand(const ControlCommand_t* cmd);
     void updateRamping(); // El "corazón" del movimiento suave
-    void setDrive(float targetAvel, int16_t angle, bool immediate);
+    void update(int16_t currentRampedPWM);
+    void applyKinematics(int16_t pwm, int16_t angle);
     void setPWM(int16_t pwm, int16_t angle, bool immediate);
     void setSpeed(int speedA, int speedB);
     void emergencyStop();

@@ -28,6 +28,7 @@ private:
 public:
     void begin();
     float getCurrentAvel();
+    int16_t getCurrentPWM();
     float getLastError();
     // Llamada desde la tarea de control del Slave (ej. 50Hz)
     void updateControl();

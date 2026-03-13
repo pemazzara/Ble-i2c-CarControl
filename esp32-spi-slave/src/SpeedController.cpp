@@ -34,14 +34,16 @@ void SpeedController::updateControl() {
         current_pwm = constrain(current_pwm, 0, 1023);
         
         // 5. Aplicar a motores (con el ángulo recibido del Master)
-        // Aplicar a motores: aquí necesitamos una función que acepte PWM y ángulo
-        // La hemos llamadosetPWM(int pwm, int angle)
        
-        motorController.setPWM(current_pwm, base_angle, false);
+        //motorController.setPWM(current_pwm, base_angle, false);
+        motorController.update(current_pwm);
         // 6. Guardar último error para la próxima iteración       
         last_error = error;
     }
-
+    
+    int16_t SpeedController::getCurrentPWM() {
+        return current_pwm;
+    }
     float SpeedController::getCurrentAvel() {
         if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             float avel = avel_current;

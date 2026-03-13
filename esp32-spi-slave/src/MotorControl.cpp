@@ -2,6 +2,7 @@
 
 #include "MotorControl.h"
 
+
 void MotorControl::begin() {
     Serial.println("🚗 Inicializando MotorControl L298N...");
     
@@ -147,6 +148,16 @@ void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
 }
 
 void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
+    targetPWM = pwm;
+    targetAngle = angle;
+
+    if (immediate) {
+        currentRampedPWM = pwm;
+        currentInterpolatedAngle = angle;
+    }
+}
+/*
+void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
     if (!ledc_initialized) return;
     if (abs(angle) > 360) return;
     
@@ -173,24 +184,44 @@ void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
         lastUpdateTime = millis();
     }
 }
+*/  
 
+void MotorControl::update(int16_t currentRampedPWM) { // Se llama en el loop de control (ej. 50Hz)
+    // Suavizado del ángulo (Interpolación Lineal hacia el target)
+    // 1. Suavizar el ángulo (Slew Rate)
+    const float ANGLE_STEP = 3.0f;
+    if (abs(targetAngle - currentInterpolatedAngle) > 0.5f) {
+        if (currentInterpolatedAngle < targetAngle) currentInterpolatedAngle += ANGLE_STEP;
+        else currentInterpolatedAngle -= ANGLE_STEP;
+    }
+    
+    // Aplicar la cinemática con el ángulo suavizado
+    applyKinematics(currentRampedPWM, (int16_t)currentInterpolatedAngle);
+}
+void MotorControl::applyKinematics(int16_t pwm, int16_t angle) {
+    if (!ledc_initialized) return;
+
+    // 1. Convertir ángulo a radianes para las funciones trigonométricas
+    // Usamos el ángulo suavizado que viene del proceso de interpolación
+    float rad = (angle * M_PI) / 180.0f;
+    float x = cos(rad);
+    float y = sin(rad);
+
+    // 2. Mezcla de canales (Cinemática Diferencial)
+    // L = (sin - cos) * PWM | R = (sin + cos) * PWM
+    float rawLeft = (y - x) * (float)pwm;
+    float rawRight = (y + x) * (float)pwm;
+
+    // 3. Normalización y Escalado
+    // Como (y + x) puede llegar a 1.414, limitamos al PWM máximo del hardware (1023)
+    const int16_t MAX_PWM = 1023;
+    
+    targetLeftSpeed = (int16_t)constrain(rawLeft, -MAX_PWM, MAX_PWM);
+    targetRightSpeed = (int16_t)constrain(rawRight, -MAX_PWM, MAX_PWM);
+    lastUpdateTime = millis();
+}
 void MotorControl::updateRamping() {
     if (!ledc_initialized) return;
-        /* 1. Verificar emergencia ANTES de mover motores
-        if (sonar && sonar->isEmergency()) {
-            if (!emergencyStopActive) {
-                Serial.println("🛑 ¡EMERGENCIA! Parando motores");
-                emergencyStopActive = true;
-                stop();
-            }
-            return;  // No seguir con movimiento normal
-        }
-        
-        // Si salió de emergencia, reactivar
-        if (emergencyStopActive) {
-            Serial.println("✅ Emergencia resuelta, reanudando");
-            emergencyStopActive = false;
-        }*/
         
     static uint32_t lastRampTime = 0;
     uint32_t ahora = millis();
