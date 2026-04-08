@@ -5,6 +5,31 @@
 #include <Arduino.h>
 #include "SPIDefinitions.h"
 
+#pragma pack(1)  // Crucial para que Android no lea basura por alineación de bytes
+typedef struct {
+    uint8_t msg_id;      // 0x81
+    uint8_t baseState;   // SystemBaseState_t (BOOT, READY, EMERGENCY, ERROR...)
+    uint8_t subState;    // ReadySubState_t (IDLE, MANUAL, AUTO)
+    uint8_t alerts;      // Bitmask: [0: Obstáculo, 1: Comm Loss, 2: LowBat]
+    uint8_t progress;    // 0-100% (para Calibración)
+    uint16_t distance;   // Datos del Sonar (del Slave)
+    
+    // Parámetros de control (punto fijo)
+    uint16_t K_fixed;    
+    uint16_t tau_fixed;  
+    
+    uint8_t needs_ack;   // 1 si requiere confirmación del usuario para recuperar
+} MasterStatusPacket_t;
+typedef struct __attribute__((packed)) {
+    uint8_t type;          // ControlCommandType
+    int16_t speed;         
+    int16_t angle;         
+    int16_t distance;      
+    uint32_t timestamp;
+    uint8_t priority;
+    uint8_t status;        
+    uint8_t targetMode;    
+} BLECommand_t;
 
 class BluetoothLeConnect {
 public:
@@ -13,11 +38,11 @@ public:
   void update();
   void sendData(String data);
   bool isConnected();
-  ControlCommand_t getLastCommand();
+  BLECommand_t getLastCommand();
   bool hasNewCommand;
 
 private:
-    ControlCommand_t lastCommand;  // Cambiar de String a ControlCommand_t
+    BLECommand_t lastCommand;  // Cambiar de String a BLECommand_t
      
 
   class MyServerCallbacks : public NimBLEServerCallbacks {

@@ -6,7 +6,7 @@
 BluetoothLeConnect::BluetoothLeConnect() {
   deviceConnected = false;
   oldDeviceConnected = false;
-  memset(&lastCommand, 0, sizeof(ControlCommand_t));  // Inicializar a cero
+  memset(&lastCommand, 0, sizeof(BLECommand_t));  // Inicializar a cero
   pServer = nullptr;
   pService = nullptr;
   pDataCharacteristic = nullptr;
@@ -81,11 +81,11 @@ ControlCommand_t BluetoothLeConnect::getLastCommand() {
     return lastCommand;
 }
 */
-ControlCommand_t BluetoothLeConnect::getLastCommand() {
-  ControlCommand_t cmd;
+BLECommand_t BluetoothLeConnect::getLastCommand() {
+  BLECommand_t cmd;
   noInterrupts();
-  memcpy(&cmd, &lastCommand, sizeof(ControlCommand_t));
-  memset(&lastCommand, 0, sizeof(ControlCommand_t));  // Limpiar después de leer
+  memcpy(&cmd, &lastCommand, sizeof(BLECommand_t));
+  memset(&lastCommand, 0, sizeof(BLECommand_t));  // Limpiar después de leer
   interrupts();
   hasNewCommand = false; // Al leerlo, marcamos que ya no es nuevo
   return cmd;
@@ -111,19 +111,18 @@ void BluetoothLeConnect::CommandCallbacks::onWrite(NimBLECharacteristic* pCharac
   
   bleConnect->hasNewCommand = true;
     // Recibimos un comando estructurado
-    if (value.length() == sizeof(ControlCommand_t)) {
+    if (value.length() == sizeof(BLECommand_t)) {
       // Copiar datos al comando  
-      memcpy(&bleConnect->lastCommand, value.data(), sizeof(ControlCommand_t));
+      memcpy(&bleConnect->lastCommand, value.data(), sizeof(BLECommand_t));
     } else {
       Serial.printf("⚠️ Tamaño de comando inválido: recibido %d, esperado %d\n", 
-                  value.length(), sizeof(ControlCommand_t));
+                  value.length(), sizeof(BLECommand_t));
     } 
     // Debug: mostrar comando recibido
     Serial.printf("📥 BLE Rx - Comando estructurado recibido:\n");
     Serial.printf("  Type: 0x%02X\n", bleConnect->lastCommand.type);
     Serial.printf("  Speed: %d\n", bleConnect->lastCommand.speed);
     Serial.printf("  Angle: %d°\n", bleConnect->lastCommand.angle);
-    Serial.printf("  Distance: %d\n", bleConnect->lastCommand.distance);
     Serial.printf("  TargetMode: %s\n", 
                   bleConnect->lastCommand.targetMode == MODE_AUTO ? "AUTO" : "MANUAL");
     Serial.printf("  Priority: %d\n", bleConnect->lastCommand.priority);

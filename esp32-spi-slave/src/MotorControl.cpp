@@ -361,6 +361,22 @@ void MotorControl::handleSPICommand(const ControlCommand_t* cmd) {
     }          
 }
 
+uint16_t MotorControl::getBatteryVoltage() {
+    return 12000; // Simulación de 12.0V (12000 mV)
+}
+    
+uint8_t MotorControl::getStatusFlags() {
+    uint8_t flags = 0x00;
+    
+    if (emergencyStopActive) {
+        flags |= 0x01; // Bit 0: Emergencia activa
+    }
+    if (isSafetyTimeout()) {
+        flags |= 0x02; // Bit 1: Timeout de seguridad
+    }
+    
+    return flags;
+}
 
 void MotorControl::updateSafety() {
     if (isSafetyTimeout() && !emergencyStopActive) {

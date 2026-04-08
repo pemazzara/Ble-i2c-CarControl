@@ -29,7 +29,7 @@ private:
     // Buffer de recepción (alineado para DMA)
     //WORD_ALIGNED_ATTR static SPIFrame_t spi_rx_buffer;
     //WORD_ALIGNED_ATTR static SPIFrame_t spi_tx_buffer;
-    static SPIFrame_t* spi_tx_buffer; 
+    static SPIResponseFrame_t* spi_tx_buffer; 
     static SPIFrame_t* spi_rx_buffer;
      // Sincronización entre tasks
     static SemaphoreHandle_t response_mutex;
@@ -45,6 +45,7 @@ private:
     void queueNextTransaction();
     void processReceivedCommand(const SPIFrame_t& rxFrame);
     void prepareResponse(SPIResponseFrame_t &txFrame);
+    uint8_t getNextMsgId();
 
     //spi_slave_transaction_t transactions[3]; // Una por cada slot de la cola
     //int transaction_index = 0;

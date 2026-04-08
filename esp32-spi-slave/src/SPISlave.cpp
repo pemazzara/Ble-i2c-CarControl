@@ -6,7 +6,7 @@
 
 
 // Variables estáticas
-SPIFrame_t* SPISlave::spi_tx_buffer = nullptr;
+SPIResponseFrame_t* SPISlave::spi_tx_buffer = nullptr       ;
 SPIFrame_t* SPISlave::spi_rx_buffer = nullptr;
 
 SemaphoreHandle_t SPISlave::cmd_ready_sem = NULL;
@@ -36,15 +36,19 @@ SPISlave::SPISlave(MotorControl &motor, UltraSonicMeasure &sensor) {
 bool SPISlave::init() {
     if (initialized) return true;
     Serial.println("🚀 Inicializando SPI Slave...");
-    size_t max_size = std::max(sizeof(SPIFrame_t), sizeof(SPIResponseFrame_t));
-    spi_rx_buffer = (SPIFrame_t*) heap_caps_malloc(max_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    spi_tx_buffer = (SPIFrame_t*) heap_caps_malloc(max_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    size_t size = sizeof(SPIFrame_t); 
+    // Aseguramos que el tamaño sea múltiplo de 4 para el DMA
+    if (size % 4 != 0) size = ((size / 4) + 1) * 4;
+    
+    spi_rx_buffer = (SPIFrame_t*) heap_caps_aligned_alloc(4, size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    spi_tx_buffer = (SPIResponseFrame_t*) heap_caps_aligned_alloc(4, size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);    
+
     if (!spi_rx_buffer || !spi_tx_buffer) {
         Serial.println("❌ No hay memoria DMA para SPI");
         return false;
     }
     memset(spi_rx_buffer, 0, sizeof(SPIFrame_t));
-    memset(spi_tx_buffer, 0, sizeof(SPIFrame_t));
+    memset(spi_tx_buffer, 0, sizeof(SPIResponseFrame_t));
     // 1. Crear semáforos
     cmd_ready_sem = xSemaphoreCreateBinary();
     buffer_mutex = xSemaphoreCreateMutex();
@@ -152,15 +156,20 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
 
     // 🛡️ GUARDIA 3: Semáforo
     if (xSemaphoreTake(response_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
-
+    // Rellenar la estructura de respuesta
+    txFrame.msg_id = getNextMsgId(); // Opcional: podrías implementar un contador de mensajes
     // 1. Magic word
     txFrame.magic_word = SPI_MAGIC_SLAVE;
+        // 2. Tipo de respuesta (puedes expandir esto según tus necesidades)
+    txFrame.type = TYPE_SENSORS; // Por defecto, respondemos con datos de sensores
+
     // 2. Motores (Verificar que el puntero no sea NULL antes de usar ->)
     if (motor_controller != nullptr && motor_controller->isInitialized()) {
-        txFrame.payload.left_speed = motor_controller->getCurrentLeft();
-        txFrame.payload.right_speed = motor_controller->getCurrentRight();
-        //txFrame.payload.distance = sensor_manager->getLastDistance();
-        txFrame.payload.status = motor_controller->getMotorStatus();
+        txFrame.payload.motors.rpm_left = motor_controller->getCurrentLeft();
+        txFrame.payload.motors.rpm_right = motor_controller->getCurrentRight();
+        txFrame.payload.motors.a_vel = 0; // Valor por defecto, se actualizará si speedCtrl está listo  
+        txFrame.payload.motors.distance = sensor_manager->getLatestSonarData(sensor_data) ? sensor_data.distance : 0xFFFF; // Si no hay datos, poner un valor inválido
+        txFrame.payload.motors.motor_flags = motor_controller->getStatusFlags(); // Implementa este método para obtener bits de error
         // Si el controlador está disponible, añadir datos
         if (pSpeedCtrl != nullptr) {
             float avel = pSpeedCtrl->getCurrentAvel();
@@ -169,38 +178,38 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
             // Escalar y limitar
             int16_t avel_scaled = (int16_t)constrain(avel * 1000, -32768, 32767);
             int16_t error_scaled = (int16_t)constrain(error * 1000, -32768, 32767);
-        
+            txFrame.payload.motors.a_vel = (uint16_t)(avel_scaled < 0 ? -avel_scaled : avel_scaled); // valor absoluto de la velocidad
             // Empaquetar (cuidado con el endianness)
-            txFrame.payload.avel_scaled_low = avel_scaled & 0xFF;
-            txFrame.payload.avel_scaled_high = (avel_scaled >> 8) & 0xFF;
-            txFrame.payload.error_scaled_low = error_scaled & 0xFF;
-            txFrame.payload.error_scaled_high = (error_scaled >> 8) & 0xFF;
+            //txFrame.payload.avel_scaled_low = avel_scaled & 0xFF;
+            //txFrame.payload.avel_scaled_high = (avel_scaled >> 8) & 0xFF;
+            //txFrame.payload.error_scaled_low = error_scaled & 0xFF;
+            //txFrame.payload.error_scaled_high = (error_scaled >> 8) & 0xFF;
         }
         
         if (motor_controller->getTargetLeft() == 0 && motor_controller->getTargetRight() == 0) {
-            txFrame.payload.status |= 0x01; // Bit 0: motores parados
+            txFrame.payload.motors.motor_flags |= 0x01; // Bit 0: motores parados
         }
     } else {
-        txFrame.payload.status = 0x80; // Error: No vinculado o no inicializado
+        txFrame.payload.motors.motor_flags = 0x80; // Error: No vinculado o no inicializado
     }
 
     // 3. Sensores
     if (sensor_manager != nullptr && sensor_manager->initialized) {
         SonarSensorData_t s_data;
         if (sensor_manager->getLatestSonarData(s_data)) {
-            txFrame.payload.distance = s_data.distance; 
-            txFrame.payload.a_vel = (uint16_t)(s_data.a_vel < 0 ? -s_data.a_vel : s_data.a_vel); // valor absoluto de la velocidad
+            txFrame.payload.motors.distance = s_data.distance; 
+            txFrame.payload.motors.a_vel = (uint16_t)(s_data.a_vel < 0 ? -s_data.a_vel : s_data.a_vel); // valor absoluto de la velocidad
             // Opcional: indicar dirección en el campo status
             // Dirección: bit 5 = 1 si acercándose (avel negativo)
-            if (s_data.a_vel < 0) { txFrame.payload.status |= 0x20; // Bit 5 = acercándose
-            } else { txFrame.payload.status &= ~0x20; // limpiar bit (opcional)
+            if (s_data.a_vel < 0) { txFrame.payload.motors.motor_flags |= 0x20; // Bit 5 = acercándose
+            } else { txFrame.payload.motors.motor_flags &= ~0x20; // limpiar bit (opcional)
             }
-            if (s_data.distance > 0 && s_data.distance < 50) txFrame.payload.status |= 0x04; // Bit 4: Obstáculo Ultra-cercano
-            if (!s_data.sensor_ok) txFrame.payload.status |= 0x08; // Bit 3: Error de hardware Sonar
+            if (s_data.distance > 0 && s_data.distance < 50) txFrame.payload.motors.motor_flags |= 0x04; // Bit 4: Obstáculo Ultra-cercano
+            if (!s_data.sensor_ok) txFrame.payload.motors.motor_flags |= 0x08; // Bit 3: Error de hardware Sonar
         }
     } else {
-        txFrame.payload.distance = 0xFFFF;
-        txFrame.payload.status |= 0x08;
+        txFrame.payload.motors.distance = 0xFFFF;
+        txFrame.payload.motors.motor_flags |= 0x08;
     }
 
     // 4. Checksum y Copia a memoria DMA
@@ -211,7 +220,11 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
 
     xSemaphoreGive(response_mutex);
 }
-
+uint8_t SPISlave::getNextMsgId() {
+    static uint8_t msgCounter = 0;
+    if (++msgCounter == 0) msgCounter = 1; // saltar 0
+    return msgCounter;
+}
 // Métodos estáticos para MotorTask
 bool SPISlave::isCommandReady() {
     if (!cmd_ready_sem) return false;

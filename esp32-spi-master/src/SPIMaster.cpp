@@ -4,7 +4,10 @@
 #include <esp_log.h>
 
 static WORD_ALIGNED_ATTR SPIFrame_t master_tx_buffer;
-static WORD_ALIGNED_ATTR SPIFrame_t master_rx_buffer; 
+static WORD_ALIGNED_ATTR SPIResponseFrame_t master_rx_buffer;
+extern SensorData_t globalSensorData; 
+extern SemaphoreHandle_t sensorMutex;
+ 
 
 SPIMaster::SPIMaster() : initialized(false), spi(nullptr) {
     // Inicializamos la copia de seguridad con valores neutros
@@ -120,7 +123,6 @@ bool SPIMaster::reconnect() {
 bool SPIMaster::getCleanSensorData(uint16_t &dist, uint8_t &st) {
     // 1. Primer intento: "Despertar" al slave y pedir lectura
     ControlCommand_t cmd = last_drive_payload;
-    //memset(&cmd, 0, sizeof(cmd));
     cmd.type = CMD_READ_SENSORS;
     
     if (!sendCommand(&cmd)) return false;
@@ -133,25 +135,24 @@ bool SPIMaster::getCleanSensorData(uint16_t &dist, uint8_t &st) {
     cmd.type = CMD_STATUS; 
     if (sendCommand(&cmd)) {
         // La respuesta válida ya está en master_rx_buffer
-        dist = master_rx_buffer.payload.distance;
-        st = master_rx_buffer.payload.status;
+        dist = master_rx_buffer.payload.motors.distance;
+        st = master_rx_buffer.payload.motors.motor_flags;
         return true;
     }    
     return false;
 }
 
-
+/*
 bool SPIMaster::requestSensorData() {
     if (!initialized) return false;
-    extern SemaphoreHandle_t sensorMutex;
-    extern SensorData_t globalSensorData;
-
+    
     // 1. Definir variables temporales para la lectura SPI
     uint16_t dist = 0;
     uint8_t stat = 0;
 
     // 2. Realizar la comunicación SPI (fuera del mutex para no bloquear el sistema)
     if (!getCleanSensorData(dist, stat)) {
+         handleCommunicationErrors(master_rx_buffer.magic_word);
         // Si falla el SPI, entramos un momento para marcar el error
         if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             globalSensorData.sensorStatus &= ~(1 << 0); // Sonar OFF
@@ -170,7 +171,7 @@ bool SPIMaster::requestSensorData() {
         globalSensorData.sonarDistance = dist;
         globalSensorData.lastSonarUpdate = millis();
         globalSensorData.sensorStatus |= (1 << 0); // Bit 0 = Sonar OK
-        globalSensorData.slaveInternalStatus = stat; // Guardamos el status crudo del slave
+        
 
         // Evaluar emergencias (el bit 0x80 del slave o distancias críticas)
         if (stat & 0x80) globalSensorData.emergency = true;
@@ -183,8 +184,8 @@ bool SPIMaster::requestSensorData() {
 
     return false;
 }
-            
-            
+ */           
+ /*          
 void SPIMaster::evaluarEmergenciaInmediata(const SensorData_t &sd) {
     bool peligro = false;
 
@@ -204,19 +205,19 @@ void SPIMaster::evaluarEmergenciaInmediata(const SensorData_t &sd) {
         memset(&stopCmd, 0, sizeof(ControlCommand_t));
         
         stopCmd.type = CMD_STOP;
-        stopCmd.priority = 255; // Máxima prioridad posible
+        stopCmd.speed = 0;
+        stopCmd.angle = 0;
         stopCmd.timestamp = millis();
         
         // Enviamos al frente de la cola para que sea lo primero que procese SPIMaster
-        extern QueueHandle_t xControlQueue;
         if (xControlQueue != NULL) {
-            xQueueSendToFront(xControlQueue, &stopCmd, 0);
+            xQueueOverwrite(xControlQueue, &stopCmd);
             // Opcional: Log para saber que la emergencia se activó por hardware
             // Serial.println("🚨 [EMERGENCIA HARDWARE] ¡Obstáculo muy cercano!");
         }
     }
 }
-
+*/
 void SPIMaster::handleCommunicationErrors(uint8_t magic) {
     switch (magic) {
         case 0xFF:
@@ -237,18 +238,32 @@ void SPIMaster::handleCommunicationErrors(uint8_t magic) {
             break;
     }
 }
+uint8_t SPIMaster::getNextMsgId() {
+    static uint8_t msgCounter = 0;
+    if (++msgCounter == 0) msgCounter = 1; // saltar 0
+    return msgCounter;
+}
 
 bool SPIMaster::sendCommand(const ControlCommand_t *cmd) {
     if (!cmd || !initialized) return false;
+    if (spi == nullptr) {
+        Serial.println("❌ Error: SPI Handle es NULL!");
+        return false;
+    }
     if (cmd->type == CMD_DRIVE) {
         memcpy(&last_drive_payload, cmd, sizeof(ControlCommand_t));
     }
     // 1. Preparar Frame TX
     memset(&master_tx_buffer, 0, sizeof(SPIFrame_t));
-    master_tx_buffer.magic_word = SPI_MAGIC_MASTER;
-    memcpy(&master_tx_buffer.payload, cmd, sizeof(ControlCommand_t));
-    master_tx_buffer.checksum = calcularChecksum(&master_tx_buffer, sizeof(SPIFrame_t) - 2);
-
+    // 2. Llenar cabecera
+    master_tx_buffer.msg_id = getNextMsgId();
+    master_tx_buffer.magic_word = 0xA5;
+    // 3. Copiar el payload (el comando)
+    // Usamos memcpy por seguridad, aunque al ser estructuras packed 
+    // podrías asignar directamente: 
+    master_tx_buffer.payload = *cmd;
+    //memcpy(&master_tx_buffer.payload, cmd, sizeof(ControlCommand_t));
+    master_tx_buffer.checksum = calcularChecksum((uint8_t*)&master_tx_buffer, sizeof(SPIFrame_t) - 2);
     // 2. Limpiar RX para evitar datos antiguos
     memset(&master_rx_buffer, 0, sizeof(SPIResponseFrame_t));
 
@@ -271,10 +286,11 @@ bool SPIMaster::sendCommand(const ControlCommand_t *cmd) {
         
         if (checkRecibido == master_rx_buffer.checksum) {
             errorCounter = 0; // Comunicación perfecta
+            processResponse(master_rx_buffer); // Procesar la respuesta para actualizar estados y sensores
             return true;
         } else {
             // Opcional: Log de checksum solo si necesitas depurar ruido
-            // Serial.printf("CS Error: Rec %04X, Calc %04X\n", master_rx_buffer.checksum, checkRecibido);
+            Serial.printf("CS Error: Rec %04X, Calc %04X\n", master_rx_buffer.checksum, checkRecibido);
         }
     }
 
@@ -282,16 +298,85 @@ bool SPIMaster::sendCommand(const ControlCommand_t *cmd) {
     return false;
 }
 
-SPIResponsePayload_t SPIMaster::getLastResponse() {
-    return master_rx_buffer.payload;
+void processResponse(const SPIResponseFrame_t& res) {
+    if (res.type == TYPE_SENSORS) {
+        Serial.printf("Distancia: %d mm\n", res.payload.motors.distance);
+    } else if (res.type == TYPE_SYSTEM) {
+        Serial.printf("Progreso Calibración: %d%%\n", res.payload.system.progress);
+    }
+}
+bool SPIMaster::processResponse(const SPIResponseFrame_t& response) {
+    if (response.type == TYPE_SENSORS) {
+        if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(10)) != pdTRUE) {        
+        return false; // No pudimos acceder a los datos, la respuesta no se procesó
+        // 1. Actualización de estados básicos
+        globalSensorData.sonarDistance = response.payload.motors.distance;
+        globalSensorData.sensorStatus = response.payload.motors.motor_flags;
+        globalSensorData.lastTofUpdate = millis();
+        xSemaphoreGive(sensorMutex);
+    }
+        Serial.printf("Distancia: %d mm\n", response.payload.motors.distance);
+    } else if (response.type == TYPE_SYSTEM) {
+        if (response.payload.system.state == SLAVE_STATE_READY && (response.payload.system.K_fixed == 0 || response.payload.system.tau_fixed == 0)) {
+            //globalSensorData.calibration_valid = false;
+            xSemaphoreGive(sensorMutex);        
+            Serial.println("[SPI] Inconsistencia: Slave READY sin parámetros. Re-calibrando...");
+            return startCalibration(); // Esto enviará el comando en el siguiente ciclo
+        }
+        Serial.printf("Progreso Calibración: %d%%\n", response  .payload.system.progress);
+    }
+
+/*
+    // 2. Verificación de Integridad de Calibración
+    // Si el Slave dice estar listo pero no envió parámetros válidos
+
+
+    // 3. Manejo de Emergencia
+    if (response.slave_state == SLAVE_STATE_CALIBRATION) {
+        globalSensorData.emergency = false;
+    } else {
+        // Marcamos emergencia si el estado es EMERGENCY o si el bit 0 de flags está activo
+        globalSensorData.emergency = (response.slave_state == SLAVE_STATE_EMERGENCY) ||
+                                     ((response.progress_or_flags & 0x01) != 0);
+    }
+
+    // 4. Procesamiento de parámetros K y Tau (Punto Fijo)
+    if (response.K_fixed > 0 && response.tau_fixed > 0) {
+        globalSensorData.calibrationK = response.K_fixed / 1000.0f;
+        globalSensorData.calibrationTau = response.tau_fixed / 100.0f;
+        globalSensorData.calibrationValid = true;
+    } else {
+        globalSensorData.calibrationValid = false;
+    }
+
+    // Notificamos éxito al sistema
+    SystemState::notifySyncSuccess();
+    errorCounter = 0;
+*/
+    xSemaphoreGive(sensorMutex);
+    return true;
+}
+
+bool SPIMaster::startCalibration() {
+    ControlCommand_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type = CMD_CALIBRATE;
+    cmd.timestamp = millis();
+    Serial.println("[SPI Master] Implementar calibración...");
+    return false; // Por ahora solo logueamos, la implementación real dependerá de tu sistema de control
+    //return sendCommand(&cmd); // Enviar el comando de calibración, la respuesta se procesará en el siguiente ciclo
+}
+
+SPIResponseFrame_t SPIMaster::getLastResponse() {
+    return master_rx_buffer;
 }
 
 bool SPIMaster::isSlaveInEmergency() {
-    return (master_rx_buffer.payload.status & 0x01) != 0;
+    return (master_rx_buffer.payload.motors.motor_flags & 0x01) != 0;
 }
 
 bool SPIMaster::isSlaveMoving() {
-    return (master_rx_buffer.payload.status & 0x02) != 0;
+    return (master_rx_buffer.payload.motors.motor_flags & 0x02) != 0;
 }
 
 void SPIMaster::testCommunication() {
@@ -303,8 +388,10 @@ void SPIMaster::testCommunication() {
     // Test 1: STOP (debería resetear emergencia)
     Serial.println("Test 1: Enviando STOP...");
     memset(&testCmd, 0, sizeof(testCmd));
+
     testCmd.type = CMD_STOP;
-    testCmd.targetMode = MODE_MANUAL;
+    testCmd.speed = 0;
+    testCmd.angle = 0;
     testCmd.timestamp = millis();
     
     bool success = sendCommand(&testCmd);
@@ -313,8 +400,11 @@ void SPIMaster::testCommunication() {
     
     // Test 2: SET_MODE a MANUAL
     Serial.println("Test 2: Configurando modo MANUAL...");
+
     testCmd.type = CMD_SET_MODE;
-    testCmd.targetMode = MODE_MANUAL;
+    testCmd.speed = 0;
+    testCmd.angle = 0;
+    testCmd.timestamp = millis();
     
     success = sendCommand(&testCmd);
     Serial.println(success ? "  ✅ OK" : "  ❌ FALLÓ");
@@ -325,7 +415,7 @@ void SPIMaster::testCommunication() {
     testCmd.type = CMD_DRIVE;
     testCmd.speed = 800;
     testCmd.angle = 0;
-    testCmd.targetMode = MODE_MANUAL;
+    testCmd.timestamp = millis();
     
     success = sendCommand(&testCmd);
     if (success) {

@@ -7,9 +7,17 @@
 #include "SPIDefinitions.h"
 #include "esp_task_wdt.h"
 
+// Pines HSPI ESP32-S3
+// Configuración óptima para ESP32-S3
+#define SPI_MASTER_CLK  39   
+#define SPI_MASTER_MISO 40     
+#define SPI_MASTER_MOSI 41   
+#define SPI_MASTER_SS   42
+
 extern bool autonomousMode; // "Aviso" al compilador de que la variable vive en otro lugar
 extern uint16_t calcularChecksum(const void* data, size_t len);
 #define DISTANCIA_CRITICA_STOP 150 // 15cm o 150mm - Detener inmediatamente
+
 class SPIMaster {
 public:
     SPIMaster();
@@ -19,7 +27,7 @@ public:
     bool sendCommand(const ControlCommand_t *cmd);
     int errorCounter = 0;
     // Getters para estado del Slave
-    SPIResponsePayload_t getLastResponse();
+    SPIResponseFrame_t getLastResponse();
     bool isSlaveInEmergency();
     bool isSlaveMoving();
     bool getCleanSensorData(uint16_t &dist, uint8_t &st);
@@ -35,11 +43,15 @@ private:
     spi_device_handle_t spi;
     spi_transaction_t t;
     // Buffers para comunicación
-    SPIFrame_t master_tx_buffer;
-    SPIResponseFrame_t master_rx_buffer;
+    // En el .h de SPIMaster
+    //SPIFrame_t master_tx_buffer __attribute__((aligned(4)));
+    //SPIResponseFrame_t master_rx_buffer __attribute__((aligned(4)));
+
+    bool processResponse(const SPIResponseFrame_t& response);
     void handleCommunicationErrors(uint8_t magic);
     bool reconnect();
-    
+    uint8_t getNextMsgId();
+    bool startCalibration();
 };
 
 #endif // SPIMASTER_H

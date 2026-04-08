@@ -120,6 +120,7 @@ private:
     int smoothSpeed(int current, int target);
     int16_t applyRamp(int16_t current, int16_t target);
     void applyHardwarePWM(int16_t left, int16_t right);
+
 public:
     MotorControl() : ledc_initialized(false), targetLeftSpeed(0), 
                      targetRightSpeed(0), currentLeftSpeed(0), 
@@ -143,6 +144,8 @@ public:
     void stop();
     void updateSafety();
     uint8_t getMotorStatus();
+    uint16_t getBatteryVoltage();
+    uint8_t getStatusFlags();
      // Getters para debugging
     int16_t getCurrentLeft() { return currentLeftSpeed; }
     int16_t getCurrentRight() { return currentRightSpeed; }
