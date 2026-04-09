@@ -129,13 +129,16 @@ void SPISlave::processReceivedCommand(const SPIFrame_t& rxFrame) {
 
     if (cs != rxFrame.checksum) return; // SALIR INMEDIATAMENTE   
     motor_controller->resetSafetyTimer();
-       
+    if(rxFrame.payload.type == CMD_DRIVE){
+       uint16_t pwm = rxFrame.payload.speed;
+       uint16_t angle = rxFrame.payload.angle;
+       motor_controller->setPWM(pwm, angle, true);
+    } 
     if (xSemaphoreTake(buffer_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         // Guardar comando para que MotorTask lo procese
         memcpy(&last_command, &rxFrame.payload, sizeof(ControlCommand_t));
         xSemaphoreGive(buffer_mutex);           
         // Señalar que hay nuevo comando
-        xSemaphoreGive(cmd_ready_sem);
         if (millis() - last_print > 200) {// Debug
             Serial.printf("📥 SPI Cmd: type=0x%02X, speed=%d, angle=%d\n",
                          last_command.type, last_command.speed, last_command.angle);
