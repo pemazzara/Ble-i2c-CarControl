@@ -25,7 +25,9 @@ SPISlave spiSlave(motorController, sonar);
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t spiTaskHandle = NULL;
 TaskHandle_t sonarTaskHandle = NULL;
-
+SemaphoreHandle_t cmd_ready_sem = NULL;
+SemaphoreHandle_t buffer_mutex = NULL;
+SemaphoreHandle_t SPISlave::response_mutex = NULL;
 // =========================================================
 // DECLARACIÓN DE TAREAS
 // =========================================================
