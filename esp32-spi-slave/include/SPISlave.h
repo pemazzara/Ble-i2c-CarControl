@@ -33,9 +33,13 @@ private:
     static SPIFrame_t* spi_rx_buffer;
         // Sincronización entre tasks
     static SemaphoreHandle_t response_mutex;
+<<<<<<< HEAD
     static SemaphoreHandle_t cmd_ready_sem;
     static SemaphoreHandle_t data_ready_sem;
     static SemaphoreHandle_t buffer_mutex;
+=======
+    
+>>>>>>> 94d233aa331fd8a74ac1deaf9fecfe638a8a9cb4
      // Variables de estado
     static ControlCommand_t last_command;
     

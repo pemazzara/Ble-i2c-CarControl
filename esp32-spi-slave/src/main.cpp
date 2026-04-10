@@ -26,7 +26,9 @@ SPISlave spiSlave(motorController, sonar);
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t spiTaskHandle = NULL;
 TaskHandle_t sonarTaskHandle = NULL;
-
+SemaphoreHandle_t cmd_ready_sem = NULL;
+SemaphoreHandle_t buffer_mutex = NULL;
+SemaphoreHandle_t SPISlave::response_mutex = NULL;
 // =========================================================
 // DECLARACIÓN DE TAREAS
 // =========================================================
@@ -374,6 +376,10 @@ void setup() {
     
     // 2. Añadir tarea principal al watchdog
     esp_task_wdt_add(NULL);
+  // 1. Crear semáforos
+    cmd_ready_sem = xSemaphoreCreateBinary();
+    buffer_mutex = xSemaphoreCreateMutex();
+    response_mutex = xSemaphoreCreateMutex();  
     // 1. Inicializar componentes
     sonar.begin();
     if (!spiSlave.init()) {
