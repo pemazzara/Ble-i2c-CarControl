@@ -9,9 +9,9 @@
 SPIResponseFrame_t* SPISlave::spi_tx_buffer = nullptr       ;
 SPIFrame_t* SPISlave::spi_rx_buffer = nullptr;
 
-SemaphoreHandle_t SPISlave::cmd_ready_sem = NULL;
-SemaphoreHandle_t SPISlave::buffer_mutex = NULL;
-SemaphoreHandle_t SPISlave::response_mutex = NULL;
+extern SemaphoreHandle_t cmd_ready_sem;
+extern SemaphoreHandle_t buffer_mutex;
+extern SemaphoreHandle_t response_mutex;
 ControlCommand_t SPISlave::last_command = {0};
 SPIResponseFrame_t SPISlave::last_response = {0};
 extern uint16_t calcularChecksum(const void* data, size_t len);
