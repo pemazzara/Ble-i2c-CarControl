@@ -238,7 +238,7 @@ void setupFreeRTOS() {
         2, //TASK_PRIORITY_NAV,
         &xNavigationTaskHandle,
         1
-    );
+    );*/
     // Task en Core 0 (Aislada para radio)
     Serial.println("   Creando task BLE...");
     xTaskCreatePinnedToCore(
@@ -249,7 +249,7 @@ void setupFreeRTOS() {
         1, //TASK_PRIORITY_BLE,
         &xBLETaskHandle,
         0
-    );*/
+    );
     Serial.println("   Creando task SensorRead...");
     xTaskCreatePinnedToCore(
         sensorRead_Task,     // Función
@@ -434,13 +434,15 @@ void spiMasterTask(void *pvParameters) {
             lastCmd.angle = 0;
             lastCmd.timestamp = millis();        
         }
-        if (lastCmd.type != CMD_STOP) {
+        // C. Solo enviamos el comando si es STOP o DRIVE, para evitar enviar comandos de estado o calibración innecesarios
+        if (lastCmd.type == CMD_DRIVE) {
+
             Serial.printf("Enviando comando: Type=%d, Speed=%d, Angle=%d, Timestamp=%u\n", 
                           lastCmd.type, lastCmd.speed, lastCmd.angle, lastCmd.timestamp);
-        }
-               
-        // C. Ejecución de la comunicación SPI
-        spiMaster.sendCommand(&lastCmd);     
+                  
+            // C. Ejecución de la comunicación SPI
+            spiMaster.sendCommand(&lastCmd); 
+        }   
                
             // Prioridad 2: Si el robot ya está en stop, pedimos telemetría
             //spiMaster.requestSensorData();
@@ -588,29 +590,37 @@ void bleTask(void *pvParameters) {
             ControlCommand_t cmd;
             cmd.type = bleCmd.type;
             cmd.speed = bleCmd.speed;
-            cmd.angle = bleCmd.angle;
+            cmd.angle = bleCmd.angle;        
             cmd.timestamp = bleCmd.timestamp;
             // Asegurar timestamp actual si no viene
-                if (cmd.timestamp == 0) {
-                    cmd.timestamp = millis();
-                }
+            if (cmd.timestamp == 0) {
+                cmd.timestamp = millis();
+            }
+            // 1. Los paros de emergencia siempre deben pasar
+            if (cmd.type == CMD_STOP) {
+                xQueueOverwrite(xControlQueue, &cmd); // Enviar inmediatamente el STOP
+                autonomousMode = false;
+                Serial.println("🛑 Comando STOP recibido por BLE - Acción inmediata");
+            }
+
             // Debug
-            Serial.printf("🎮 BLE Cmd: type=0x%02X, speed=%d, angle=%d\n",
-                         cmd.type, cmd.speed, cmd.angle);            
+            Serial.printf("🎮 BLE Cmd: targetMode=0x%02X,type=0x%02X, speed=%d, angle=%d\n",
+                         bleCmd.targetMode, cmd.type, cmd.speed, cmd.angle);    
             // Lógica de Transición/Calibración (STATE_I, F, L, R)
             //if (currentState != STATE_READY) {
                 // Si NO estamos en READY, intentamos usar el comando para la transición de estados.cd
             //    processStateCommand(cmd);
             //} 
-            // 1. Los paros de emergencia siempre deben pasar
-            if (cmd.type == CMD_STOP) {
+            
+            if (cmd.type == CMD_DRIVE ) {
                 xQueueOverwrite(xControlQueue, &cmd); // Enviar al frente para máxima prioridad
                 autonomousMode = false; // Desactivar modo autónomo ante un stop
             } 
             // 2. Si no es emergencia, verificamos el modo
             else if (bleCmd.targetMode == MODE_MANUAL) {
                 autonomousMode = false;  // Desactivar modo autónomo
-                xQueueOverwrite(xControlQueue, &cmd);
+            }else if (bleCmd.targetMode == MODE_AUTO) {
+                autonomousMode = true; // Activar modo autónomo
             } 
             // 3. Si es autónomo y NO es un heartbeat, avisamos que ignoramos el comando
             else if (bleCmd.type != CMD_HEARTBEAT && bleCmd.targetMode == MODE_AUTO) {

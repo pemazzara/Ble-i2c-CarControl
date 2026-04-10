@@ -147,16 +147,7 @@ void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
     }
 }
 
-void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
-    targetPWM = pwm;
-    targetAngle = angle;
 
-    if (immediate) {
-        currentRampedPWM = pwm;
-        currentInterpolatedAngle = angle;
-    }
-}
-/*
 void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
     if (!ledc_initialized) return;
     if (abs(angle) > 360) return;
@@ -172,19 +163,26 @@ void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
     rawLeft = constrain(rawLeft, -MAX_VAL, MAX_VAL);
     rawRight = constrain(rawRight, -MAX_VAL, MAX_VAL);
     
-    if (immediate || pwm == 0) {
+    if (immediate && pwm == 0) {
         targetLeftSpeed = 0;
         targetRightSpeed = 0;
         currentLeftSpeed = 0;
         currentRightSpeed = 0;
         applyHardwarePWM(0, 0);
+    } else if (immediate  && pwm != 0) {
+         applyHardwarePWM(rawLeft, rawRight);
+         targetLeftSpeed = rawLeft;
+         targetRightSpeed = rawRight;
+         currentLeftSpeed = rawLeft;
+         currentRightSpeed = rawRight;
+         lastUpdateTime = millis();
     } else {
         targetLeftSpeed = rawLeft;
         targetRightSpeed = rawRight;
         lastUpdateTime = millis();
     }
 }
-*/  
+ 
 
 void MotorControl::update(int16_t currentRampedPWM) { // Se llama en el loop de control (ej. 50Hz)
     // Suavizado del ángulo (Interpolación Lineal hacia el target)

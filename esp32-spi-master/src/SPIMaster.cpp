@@ -104,7 +104,7 @@ bool SPIMaster::begin() {
     if (!testSPI()) {
         Serial.println("[SPI Master] ⚠️ Test SPI falló, pero continuando...");
     }
-
+    
     Serial.println("[SPI Master] ✅ Inicializado correctamente");
     Serial.printf("   Frecuencia: %d Hz, Mode: %d\n", devcfg.clock_speed_hz, devcfg.mode);
     
@@ -261,8 +261,8 @@ bool SPIMaster::sendCommand(const ControlCommand_t *cmd) {
     // 3. Copiar el payload (el comando)
     // Usamos memcpy por seguridad, aunque al ser estructuras packed 
     // podrías asignar directamente: 
-    master_tx_buffer.payload = *cmd;
-    //memcpy(&master_tx_buffer.payload, cmd, sizeof(ControlCommand_t));
+    //master_tx_buffer.payload = *cmd;
+    memcpy(&master_tx_buffer.payload, cmd, sizeof(ControlCommand_t));
     master_tx_buffer.checksum = calcularChecksum((uint8_t*)&master_tx_buffer, sizeof(SPIFrame_t) - 2);
     // 2. Limpiar RX para evitar datos antiguos
     memset(&master_rx_buffer, 0, sizeof(SPIResponseFrame_t));

@@ -53,7 +53,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t msg_id;              // ID de mensaje para tracking
     uint8_t magic_word;           // 0xA5    
-    ControlCommand_t payload;     // 10 bytes
+    ControlCommand_t payload;     // 8 bytes
     uint8_t padding[4]; // 👈 Esto completa los 16 bytes (1+1+8+4+2 = 16)
     uint16_t checksum;            // 2 bytes
 } SPIFrame_t;

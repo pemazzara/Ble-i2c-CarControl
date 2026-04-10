@@ -14,6 +14,7 @@ SemaphoreHandle_t SPISlave::buffer_mutex = NULL;
 SemaphoreHandle_t SPISlave::response_mutex = NULL;
 ControlCommand_t SPISlave::last_command = {0};
 SPIResponseFrame_t SPISlave::last_response = {0};
+
 extern uint16_t calcularChecksum(const void* data, size_t len);
 extern UltraSonicMeasure sonar;
 // Cambiar la declaración de speedCtrl a un puntero o referencia, 
@@ -36,6 +37,11 @@ SPISlave::SPISlave(MotorControl &motor, UltraSonicMeasure &sensor) {
 bool SPISlave::init() {
     if (initialized) return true;
     Serial.println("🚀 Inicializando SPI Slave...");
+    // 1. Crear semáforos
+    cmd_ready_sem = xSemaphoreCreateBinary();
+    buffer_mutex = xSemaphoreCreateMutex();
+    response_mutex = xSemaphoreCreateMutex();
+
     size_t size = sizeof(SPIFrame_t); 
     // Aseguramos que el tamaño sea múltiplo de 4 para el DMA
     if (size % 4 != 0) size = ((size / 4) + 1) * 4;
@@ -49,13 +55,10 @@ bool SPISlave::init() {
     }
     memset(spi_rx_buffer, 0, sizeof(SPIFrame_t));
     memset(spi_tx_buffer, 0, sizeof(SPIResponseFrame_t));
-    // 1. Crear semáforos
-    cmd_ready_sem = xSemaphoreCreateBinary();
-    buffer_mutex = xSemaphoreCreateMutex();
-    response_mutex = xSemaphoreCreateMutex();
+
     
     if (!cmd_ready_sem || !buffer_mutex || !response_mutex) return false;
-
+    
     // 2. Configuración BUS
     spi_bus_config_t buscfg = {
         .mosi_io_num = SPI_SLAVE_MOSI,
@@ -87,12 +90,15 @@ bool SPISlave::init() {
 }
 
 void SPISlave::queueNextTransaction() {
-    // Usamos una variable persistente, NO local
+    // 1. Limpiar el buffer de recepción (DMA RAM) antes de recibir
+    memset(spi_rx_buffer, 0, sizeof(SPIFrame_t)); 
+    
+    // 2. Limpiar la estructura de transacción
     memset(&transaction, 0, sizeof(spi_slave_transaction_t));
     
     transaction.length = sizeof(SPIFrame_t) * 8; 
     transaction.rx_buffer = spi_rx_buffer;
-    transaction.tx_buffer = spi_tx_buffer;
+    transaction.tx_buffer = spi_tx_buffer; // Aquí ya debe estar la respuesta preparada
     
     esp_err_t ret = spi_slave_queue_trans(spi_host, &transaction, portMAX_DELAY);
     if (ret != ESP_OK) {
@@ -100,25 +106,29 @@ void SPISlave::queueNextTransaction() {
     }
 }
 
+
+
 void SPISlave::processSPICommunication() {
     if (!initialized || spi_rx_buffer == nullptr) return;
-
+    
     spi_slave_transaction_t *result = NULL;
     // Timeout 0 para no bloquear la tarea
     esp_err_t ret = spi_slave_get_trans_result(spi_host, &result, pdMS_TO_TICKS(10));
-    
+
     if (ret == ESP_OK && result != NULL) {
         // 1. DECLARACIÓN: Creamos la variable local que faltaba
-        SPIFrame_t rx_frame;
+        SPIFrame_t rx_local;
         // 2. COPIA SEGURA: Pasamos los datos del buffer DMA a nuestra variable local
         // Nota: spi_rx_buffer es puntero, rx_frame es objeto (usamos &)
-        memcpy(&rx_frame, spi_rx_buffer, sizeof(SPIFrame_t));
+        memcpy(&rx_local, spi_rx_buffer, sizeof(SPIFrame_t));
         // VALIDAR MAGIC WORD ANTES DE COPIAR
-        if (rx_frame.magic_word == 0xA5) {
-            processReceivedCommand(rx_frame);
-        }
-        
-        prepareResponse(last_response);
+        if (rx_local.magic_word == 0xA5) processReceivedCommand(rx_local);
+        // 3. PREPARAR LA RESPUESTA PARA LA SIGUIENTE VEZ
+        // Usamos una variable local para construir la respuesta tranquilamente
+        SPIResponseFrame_t nextResponse;
+        prepareResponse(nextResponse); 
+        // Dentro de prepareResponse ya se hace el memcpy al spi_tx_buffer
+        // 4. Encolar la siguiente (el hardware ya tiene la respuesta lista en spi_tx_buffer)
         queueNextTransaction();
     }
 }
@@ -127,21 +137,24 @@ void SPISlave::processReceivedCommand(const SPIFrame_t& rxFrame) {
     uint16_t cs = calcularChecksum((uint8_t*)&rxFrame, sizeof(SPIFrame_t) - 2);
     static uint32_t last_print = 0;
 
-    if (cs != rxFrame.checksum) return; // SALIR INMEDIATAMENTE   
-    motor_controller->resetSafetyTimer();
-       
-    if (xSemaphoreTake(buffer_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        // Guardar comando para que MotorTask lo procese
-        memcpy(&last_command, &rxFrame.payload, sizeof(ControlCommand_t));
-        xSemaphoreGive(buffer_mutex);           
-        // Señalar que hay nuevo comando
+    if (cs != rxFrame.checksum) return; // SALIR INMEDIATAMENTE
+    motor_controller->resetSafetyTimer();    
+    xSemaphoreGive(cmd_ready_sem);   // Inicializar a 1
+    // 2. Guaradr y Señalar que hay nuevo comando        
+    if (cmd_ready_sem != NULL && xSemaphoreTake(cmd_ready_sem, pdMS_TO_TICKS(5)) == pdTRUE) {
+        last_command = rxFrame.payload;
         xSemaphoreGive(cmd_ready_sem);
-        if (millis() - last_print > 200) {// Debug
-            Serial.printf("📥 SPI Cmd: type=0x%02X, speed=%d, angle=%d\n",
-                         last_command.type, last_command.speed, last_command.angle);
-                last_print = millis();
-            }
-        }    
+    } else {
+        Serial.println("❌ Error: No se pudo tomar el semáforo para cmd_ready_sem");
+    }
+    
+}    
+
+bool SPISlave::isCommandReady() {
+    if (!cmd_ready_sem) return false;    
+    // Intentamos tomarlo con 0 espera. 
+    // Si retorna pdTRUE, había una señal y ya la "limpiamos".
+    return (xSemaphoreTake(cmd_ready_sem, 0) == pdTRUE);
 }
 
 void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
@@ -162,6 +175,7 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
     txFrame.magic_word = SPI_MAGIC_SLAVE;
         // 2. Tipo de respuesta (puedes expandir esto según tus necesidades)
     txFrame.type = TYPE_SENSORS; // Por defecto, respondemos con datos de sensores
+    txFrame.payload.motors.motor_flags = 0;
 
     // 2. Motores (Verificar que el puntero no sea NULL antes de usar ->)
     if (motor_controller != nullptr && motor_controller->isInitialized()) {
@@ -170,6 +184,7 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
         txFrame.payload.motors.a_vel = 0; // Valor por defecto, se actualizará si speedCtrl está listo  
         txFrame.payload.motors.distance = sensor_manager->getLatestSonarData(sensor_data) ? sensor_data.distance : 0xFFFF; // Si no hay datos, poner un valor inválido
         txFrame.payload.motors.motor_flags = motor_controller->getStatusFlags(); // Implementa este método para obtener bits de error
+
         // Si el controlador está disponible, añadir datos
         if (pSpeedCtrl != nullptr) {
             float avel = pSpeedCtrl->getCurrentAvel();
@@ -179,25 +194,26 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
             int16_t avel_scaled = (int16_t)constrain(avel * 1000, -32768, 32767);
             int16_t error_scaled = (int16_t)constrain(error * 1000, -32768, 32767);
             txFrame.payload.motors.a_vel = (uint16_t)(avel_scaled < 0 ? -avel_scaled : avel_scaled); // valor absoluto de la velocidad
-            // Empaquetar (cuidado con el endianness)
-            //txFrame.payload.avel_scaled_low = avel_scaled & 0xFF;
-            //txFrame.payload.avel_scaled_high = (avel_scaled >> 8) & 0xFF;
-            //txFrame.payload.error_scaled_low = error_scaled & 0xFF;
-            //txFrame.payload.error_scaled_high = (error_scaled >> 8) & 0xFF;
         }
         
+        // Bit 0: Motores parados
         if (motor_controller->getTargetLeft() == 0 && motor_controller->getTargetRight() == 0) {
             txFrame.payload.motors.motor_flags |= 0x01; // Bit 0: motores parados
         }
-    } else {
-        txFrame.payload.motors.motor_flags = 0x80; // Error: No vinculado o no inicializado
-    }
+        } else {
+            txFrame.payload.motors.motor_flags = 0x80; // Error: No vinculado o no inicializado
+        }
 
     // 3. Sensores
     if (sensor_manager != nullptr && sensor_manager->initialized) {
         SonarSensorData_t s_data;
         if (sensor_manager->getLatestSonarData(s_data)) {
-            txFrame.payload.motors.distance = s_data.distance; 
+            txFrame.payload.motors.distance = s_data.distance;
+                        // Bit 2: Obstáculo Crítico (Basado en Sonar del Slave)
+            if (s_data.distance > 0 && s_data.distance < 50) {
+                txFrame.payload.motors.motor_flags |= 0x04; 
+            }
+
             txFrame.payload.motors.a_vel = (uint16_t)(s_data.a_vel < 0 ? -s_data.a_vel : s_data.a_vel); // valor absoluto de la velocidad
             // Opcional: indicar dirección en el campo status
             // Dirección: bit 5 = 1 si acercándose (avel negativo)
@@ -225,13 +241,9 @@ uint8_t SPISlave::getNextMsgId() {
     if (++msgCounter == 0) msgCounter = 1; // saltar 0
     return msgCounter;
 }
-// Métodos estáticos para MotorTask
-bool SPISlave::isCommandReady() {
-    if (!cmd_ready_sem) return false;
-    return uxSemaphoreGetCount(cmd_ready_sem) > 0;
-}
 
 ControlCommand_t SPISlave::getLastCommand() {
+
     ControlCommand_t cmd = {0};
     
     if (xSemaphoreTake(buffer_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -240,13 +252,6 @@ ControlCommand_t SPISlave::getLastCommand() {
     }
     
     return cmd;
-}
-
-void SPISlave::commandProcessed() {
-    // Vaciar completamente el semáforo por si se acumularon varias señales
-    while(uxSemaphoreGetCount(cmd_ready_sem) > 0) {
-        xSemaphoreTake(cmd_ready_sem, 0);
-    }
 }
 
 SPIFrame_t SPISlave::getReceivedFrame() {

@@ -31,14 +31,14 @@ private:
     //WORD_ALIGNED_ATTR static SPIFrame_t spi_tx_buffer;
     static SPIResponseFrame_t* spi_tx_buffer; 
     static SPIFrame_t* spi_rx_buffer;
-     // Sincronización entre tasks
+        // Sincronización entre tasks
     static SemaphoreHandle_t response_mutex;
     static SemaphoreHandle_t cmd_ready_sem;
     static SemaphoreHandle_t data_ready_sem;
     static SemaphoreHandle_t buffer_mutex;
-    
      // Variables de estado
     static ControlCommand_t last_command;
+    
     //static SpeedController* speedCtrl;
     static SPIResponseFrame_t last_response;
     // Pone los datos en el buffer DMA y le dice al hardware "Listos para recibir"
@@ -67,6 +67,7 @@ public:
     static void commandProcessed();
     static SPIFrame_t getReceivedFrame();
     static void signalDataProcessed();
+
     
     //static void setMotorController(MotorControl* mc) { motor_controller = mc; }   
     //static void setSensorManager(SensorManager* sm) { sensor_manager = sm; }

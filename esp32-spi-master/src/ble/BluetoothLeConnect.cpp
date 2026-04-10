@@ -107,7 +107,7 @@ void BluetoothLeConnect::MyServerCallbacks::onDisconnect(NimBLEServer* pServer) 
 
 
 void BluetoothLeConnect::CommandCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
-  std::string value = pCharacteristic->getValue();
+  NimBLEAttValue value = pCharacteristic->getValue();
   
   bleConnect->hasNewCommand = true;
     // Recibimos un comando estructurado
