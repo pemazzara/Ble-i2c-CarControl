@@ -228,7 +228,7 @@ void setupFreeRTOS() {
         &xSafetyTaskHandle,
         1
     );
-    
+    */
     Serial.println("   Creando task Navigation...");
     xTaskCreatePinnedToCore(
         navigationTask,
@@ -238,7 +238,7 @@ void setupFreeRTOS() {
         2, //TASK_PRIORITY_NAV,
         &xNavigationTaskHandle,
         1
-    );*/
+    );
     // Task en Core 0 (Aislada para radio)
     Serial.println("   Creando task BLE...");
     xTaskCreatePinnedToCore(

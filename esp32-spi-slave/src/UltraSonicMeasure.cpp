@@ -77,7 +77,7 @@ float UltraSonicMeasure::sonarApproachRateRMT() {
     rmt_get_ringbuf_handle(RMT_RX_CHANNEL, &rb);
     
     size_t rx_size = 0;
-    rmt_item32_t* items = (rmt_item32_t*) xRingbufferReceive(rb, &rx_size, pdMS_TO_TICKS(100)); // Timeout de 100ms
+    rmt_item32_t* items = (rmt_item32_t*) xRingbufferReceive(rb, &rx_size, pdMS_TO_TICKS(15)); // Timeout de 100ms
 
 
     if (items && rx_size >= 1) {
@@ -102,7 +102,10 @@ float UltraSonicMeasure::sonarApproachRateRMT() {
     if (lastSonarTime > 0 && currentTime > lastSonarTime) {
         uint32_t timeDiff = currentTime - lastSonarTime; // ms
         if (timeDiff > 20) { // Evitar cálculos erráticos por lecturas muy rápidas
-            approachRate = (float)(currentRawTime - lastRawTime) * 1000.0f / timeDiff;
+            float rawApproachRate = (float)(currentRawTime - lastRawTime) * 1000.0f / timeDiff;
+            // Filtrar: 80% valor anterior, 20% valor nuevo
+            approachRate = (0.8f * approachRate) + (0.2f * rawApproachRate);
+            //approachRate = (float)(currentRawTime - lastRawTime) * 1000.0f / timeDiff;
         }
        
     }

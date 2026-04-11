@@ -9,11 +9,13 @@
 SPIResponseFrame_t* SPISlave::spi_tx_buffer = nullptr       ;
 SPIFrame_t* SPISlave::spi_rx_buffer = nullptr;
 
-extern SemaphoreHandle_t cmd_ready_sem;
-extern SemaphoreHandle_t buffer_mutex;
-extern SemaphoreHandle_t response_mutex;
+SemaphoreHandle_t SPISlave::buffer_mutex = NULL;
+SemaphoreHandle_t SPISlave::response_mutex = NULL;
+SemaphoreHandle_t SPISlave::cmd_mutex = NULL; // Nuevo semáforo para proteger el acceso a last_command
+SemaphoreHandle_t SPISlave::cmd_ready_sem = NULL; // Semáforo para indicar que hay un comando nuevo sin procesar
 ControlCommand_t SPISlave::last_command = {0};
 SPIResponseFrame_t SPISlave::last_response = {0};
+
 
 extern uint16_t calcularChecksum(const void* data, size_t len);
 extern UltraSonicMeasure sonar;
@@ -38,6 +40,7 @@ bool SPISlave::init() {
     if (initialized) return true;
     Serial.println("🚀 Inicializando SPI Slave...");
     // 1. Crear semáforos
+    cmd_mutex = xSemaphoreCreateMutex();
     cmd_ready_sem = xSemaphoreCreateBinary();
     buffer_mutex = xSemaphoreCreateMutex();
     response_mutex = xSemaphoreCreateMutex();
@@ -57,7 +60,7 @@ bool SPISlave::init() {
     memset(spi_tx_buffer, 0, sizeof(SPIResponseFrame_t));
 
     
-    if (!cmd_ready_sem || !buffer_mutex || !response_mutex) return false;
+    if (!cmd_mutex || !buffer_mutex || !response_mutex) return false;
     
     // 2. Configuración BUS
     spi_bus_config_t buscfg = {
@@ -136,47 +139,25 @@ void SPISlave::processReceivedCommand(const SPIFrame_t& rxFrame) {
     // 1. Verificar Checksum PRIMERO
     uint16_t cs = calcularChecksum((uint8_t*)&rxFrame, sizeof(SPIFrame_t) - 2);
     static uint32_t last_print = 0;
-
-<<<<<<< HEAD
+   
     if (cs != rxFrame.checksum) return; // SALIR INMEDIATAMENTE
-    motor_controller->resetSafetyTimer();    
-    xSemaphoreGive(cmd_ready_sem);   // Inicializar a 1
+    motor_controller->resetSafetyTimer();      // Inicializar a 1
     // 2. Guaradr y Señalar que hay nuevo comando        
-    if (cmd_ready_sem != NULL && xSemaphoreTake(cmd_ready_sem, pdMS_TO_TICKS(5)) == pdTRUE) {
+    if (xSemaphoreTake(cmd_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         last_command = rxFrame.payload;
-        xSemaphoreGive(cmd_ready_sem);
-    } else {
-        Serial.println("❌ Error: No se pudo tomar el semáforo para cmd_ready_sem");
+        xSemaphoreGive(cmd_mutex); // Liberar para que MotorTask lo procese
+        
     }
-    
+     xSemaphoreGive(cmd_ready_sem);   
 }    
 
-bool SPISlave::isCommandReady() {
-    if (!cmd_ready_sem) return false;    
+bool SPISlave::isCommandReady() { 
+       if (!cmd_ready_sem) return false;    
     // Intentamos tomarlo con 0 espera. 
     // Si retorna pdTRUE, había una señal y ya la "limpiamos".
     return (xSemaphoreTake(cmd_ready_sem, 0) == pdTRUE);
-=======
-    if (cs != rxFrame.checksum) return; // SALIR INMEDIATAMENTE   
-    motor_controller->resetSafetyTimer();
-    if(rxFrame.payload.type == CMD_DRIVE){
-       uint16_t pwm = rxFrame.payload.speed;
-       uint16_t angle = rxFrame.payload.angle;
-       motor_controller->setPWM(pwm, angle, true);
-    } 
-    if (xSemaphoreTake(buffer_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        // Guardar comando para que MotorTask lo procese
-        memcpy(&last_command, &rxFrame.payload, sizeof(ControlCommand_t));
-        xSemaphoreGive(buffer_mutex);           
-        // Señalar que hay nuevo comando
-        if (millis() - last_print > 200) {// Debug
-            Serial.printf("📥 SPI Cmd: type=0x%02X, speed=%d, angle=%d\n",
-                         last_command.type, last_command.speed, last_command.angle);
-                last_print = millis();
-            }
-        }    
->>>>>>> 94d233aa331fd8a74ac1deaf9fecfe638a8a9cb4
 }
+
 
 void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
     memset(&txFrame, 0, sizeof(SPIResponseFrame_t)); // Limpiar todo, incluyendo padding
@@ -289,7 +270,7 @@ SPIFrame_t SPISlave::getReceivedFrame() {
 
 void SPISlave::signalDataProcessed() {
     // Limpiar semáforo
-    while (xSemaphoreTake(data_ready_sem, 0) == pdTRUE) {
+    while (xSemaphoreTake(cmd_ready_sem, 0) == pdTRUE) {
         // Consumir todas las señales pendientes
     }
 }

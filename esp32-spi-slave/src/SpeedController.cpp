@@ -27,11 +27,22 @@ void SpeedController::updateControl() {
         float derivative = (error - last_error) * Kd;
         float correction = Kp * error + error_integral + derivative;
         
-        // 4. Calcular PWM (partiendo de un valor base)
+    
         // El valor base puede ser el último PWM exitoso
         //static int current_pwm = 300;
-        current_pwm += (int)correction;
-        current_pwm = constrain(current_pwm, 0, 1023);
+        //current_pwm += (int)correction;
+        //current_pwm = constrain(current_pwm, 0, 1023);
+
+        // 4. Calcular PWM (partiendo de un valor base)
+        if (target_avel > 0) {
+            current_pwm += (int)correction;
+            // Si el PID pide movimiento, forzamos que esté en el rango útil (300-1023)
+            current_pwm = constrain(current_pwm, 300, 1023);
+        } else {
+            // Si no hay objetivo, apagamos motores y reseteamos el acumulador
+            current_pwm = 0;
+            error_integral = 0;
+        }
         
         // 5. Aplicar a motores (con el ángulo recibido del Master)
        

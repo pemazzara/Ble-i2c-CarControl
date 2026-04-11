@@ -26,9 +26,7 @@ SPISlave spiSlave(motorController, sonar);
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t spiTaskHandle = NULL;
 TaskHandle_t sonarTaskHandle = NULL;
-SemaphoreHandle_t cmd_ready_sem = NULL;
-SemaphoreHandle_t buffer_mutex = NULL;
-SemaphoreHandle_t SPISlave::response_mutex = NULL;
+
 // =========================================================
 // DECLARACIÓN DE TAREAS
 // =========================================================
@@ -192,25 +190,20 @@ void motorTask(void *pvParameters) {
         if (SPISlave::isCommandReady()) {
             ControlCommand_t cmd = SPISlave::getLastCommand();
             Serial.printf("✅ Cmd Listo: Type=%d, PWM: %d, Angle: %d\n", cmd.type, cmd.speed, cmd.angle);   
-            motorController.handleSPICommand(&cmd);
-            //speedController.setTargetFromMaster(cmd);
+            //motorController.handleSPICommand(&cmd);
+            speedController.setTargetFromMaster(cmd);
             last_valid_command_ms = now; // Actualizar cada vez que llega algo del Master
         }
         
-        // 2. Actualizar control PID
-        //speedController.updateControl();
         
-        /* --- WATCHDOG DE SEGURIDAD SPI ---
+        // --- WATCHDOG DE SEGURIDAD SPI ---
         if (now - last_valid_command_ms > 500) {
-            // Si el Master no ha dicho nada en 0.5s, paramos por seguridad
             motorController.setPWM(0, 0, true);
+        }else {
+            speedController.updateControl();
+            //motorController.updateRamping();
         }
-        */
-        // 3. Actualizar rampas de motor (50Hz)
-        if (now - last_ramp_update >= 20) {
-            last_ramp_update = now;
-            motorController.updateRamping();
-        }
+        
         
     }
 }
@@ -376,10 +369,7 @@ void setup() {
     
     // 2. Añadir tarea principal al watchdog
     esp_task_wdt_add(NULL);
-  // 1. Crear semáforos
-    cmd_ready_sem = xSemaphoreCreateBinary();
-    buffer_mutex = xSemaphoreCreateMutex();
-    response_mutex = xSemaphoreCreateMutex();  
+
     // 1. Inicializar componentes
     sonar.begin();
     if (!spiSlave.init()) {
@@ -388,7 +378,7 @@ void setup() {
     }
     
     motorController.begin();
-    //speedController.begin();
+    speedController.begin();
        
     // Inicializar SPI (usa referencias del constructor)
 
