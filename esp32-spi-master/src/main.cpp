@@ -9,6 +9,7 @@
 #include "config.h"
 #include "GradientAligner.h"
 #include "esp_task_wdt.h"
+#include "system_state.h"
 
 
     /*
@@ -32,14 +33,14 @@ GPIO 42 (CS)   ------- GPIO 42 (CS)
 #define DISTANCIA_CRITICA_STOP 150 // 15cm o 150mm - Detener inmediatamente
 
 // Estados del sistema de navegación
-enum SystemState {
+enum InitialState {
  STATE_I,   // Estado inicial de espera
  STATE_F,   // Escaneo Frontal (se espera comando 'L')
  STATE_L,   // Escaneo Izquierdo (se espera comando 'R')
  STATE_R,   // Escaneo Derecho (se espera comando 'F')
  STATE_READY // Listo para operar
 };
-SystemState currentState = STATE_I;
+InitialState currentState = STATE_I;
 
 
 // Handles globales de FreeRTOS
@@ -50,6 +51,10 @@ TaskHandle_t xNavigationTaskHandle = NULL;
 TaskHandle_t xBLETaskHandle = NULL;
 
 QueueHandle_t xControlQueue;
+QueueHandle_t xStatusQueue;
+QueueHandle_t xBLECommandQueue;
+//QueueHandle_t xSPICommandQueue; 
+
 SemaphoreHandle_t sensorMutex;
 
 void setupFreeRTOS();
@@ -60,8 +65,12 @@ void sensorRead_Task(void *pvParameters);
 void navigationTask(void *pvParameters);
 void bleTask(void *pvParameters);
 void spiMasterTask(void *pvParameters);
+void masterFSMTask(void *pvParameters);
 
 void handleSystemState();
+void handleBLECommand(const BLECommand_t& cmd, ControlCommand_t& spiCmd, bool& pending);
+void updateFSMFromSlaveData(const SensorData_t& data);
+void sendStatusUpdate();
 void processStateCommand(char command);
 void checkJTAGPins();
 void speedsToSpeedAngle(int16_t left, int16_t right, int& speed, int& angle);
@@ -72,8 +81,171 @@ static SPIMaster spiMaster; // Vive para siempre en el segmento de datos
 BluetoothLeConnect ble;
 SensorControl sensors;
 SensorData_t globalSensorData;
+//AngleOptimizer angleOptimizer;
+//MasterStatusPacket_t statusPacket;  
 
 bool autonomousMode = false;
+
+
+// Funciones manejo FSM
+// Traduce el comando recibido por BLE 
+// a una transición en la FSM del Master.
+void handleBLECommand(const BLECommand_t& cmd, ControlCommand_t& spiCmd, bool& pending) {
+    switch (cmd.type) {
+        case 0x02: // CMD_HEARTBEAT (Asegúrate de que coincida con el enum de Android)
+                    // No hacemos nada con los motores, pero el simple hecho de entrar aquí
+                    // ya debería haber actualizado el timestamp de "Última comunicación"
+                    // en tu lógica de salud del sistema.
+                    Serial.println("💓 Heartbeat recibido y validado");
+                    break;
+        case 0x05: // CMD_SET_MODE
+                    SystemState::setBaseState(SYSTEM_STATE_READY);
+                    if (cmd.targetMode == 0x02 || cmd.targetMode == 0x00) { // MANUAL o JOYSTICK
+                        SystemState::setManualMode();
+                    } 
+                    else if (cmd.targetMode == 0x03) { // AUTOMATIC
+                        SystemState::setAutonomousMode();
+                    }
+                    break;
+                    
+        case 0x07: // CMD_IDLE
+                    if (SystemState::getBaseState() == SYSTEM_STATE_READY) {
+                    SystemState::setIdleMode();
+                    }
+                    break;
+        case 0x0B: // CMD_CALIBRATE
+                    if (SystemState::getBaseState() == SYSTEM_STATE_BOOT ||
+                        SystemState::getBaseState() == SYSTEM_STATE_READY) {
+                        SystemState::setCalibrate();
+                    }
+                    break;
+
+        case 0x00: // CMD_STOP (Emergencia)
+                    SystemState::setEmergency();
+                    break;
+                
+        case 0x09: // RESET_EMERGENCY
+                    SystemState::setBaseState(SYSTEM_STATE_READY);
+                    SystemState::setReadySubState(READY_SUBSTATE_IDLE);
+                    break;
+
+        case 0x01: // CMD_DRIVE
+            // Solo si estamos en READY y modo MANUAL
+            if (SystemState::getBaseState() == SYSTEM_STATE_READY &&
+                SystemState::getReadySubState() == READY_SUBSTATE_MANUAL) {
+                // Preparar comando SPI (tipo CMD_DRIVE)
+                spiCmd.type = CMD_DRIVE;
+                spiCmd.speed = cmd.speed;
+                spiCmd.angle = cmd.angle;
+                pending = true;   // Marcar pendiente
+            }
+            break;
+    }
+}
+// Actualiza la FSM según el estado y los datos provenientes del Slave.
+void updateFSMFromSlaveData(const SensorData_t& data) {
+    SystemBaseState_t currentMasterState = SystemState::getBaseState();
+    
+    // 1. Verificar salud (El Watchdog se resetea en SPIMaster::sendCommand)
+    SystemState::checkHealth();
+    
+    // Si el Watchdog mató el sistema, no procesamos lógica de sensores
+    if (!SystemState::isCommActive() || currentMasterState == SYSTEM_STATE_ERROR) {
+        return; 
+    }
+
+    // 2. PRIORIDAD MÁXIMA: Emergencia (Hardware o Software)
+    bool slaveInEmergency = (data.lastSlaveFlags & 0x01) || data.emergency || (data.lastSlaveState == SLAVE_STATE_EMERGENCY);
+    
+    if (slaveInEmergency) {
+        if (currentMasterState != SYSTEM_STATE_EMERGENCY) {
+            SystemState::setEmergency();
+        }
+        return; 
+    }
+
+    // 3. Error Crítico del Slave (Ej: Fallo de driver de motor)
+    if (data.lastSlaveFlags & 0x08) {
+        SystemState::setError();
+        return;
+    }
+
+    // 4. Sincronización de Calibración
+    if (data.lastSlaveState == SLAVE_STATE_CALIBRATION) {
+        if (currentMasterState != SYSTEM_STATE_CALIBRATE) {
+            SystemState::setCalibrate();
+        }
+        return;
+    }
+
+    // 5. Gestión del estado READY
+    if (data.calibrationValid) {
+        // Si el Slave está listo pero el Master sigue en BOOT/CALIBRATE
+        if (currentMasterState != SYSTEM_STATE_READY) {
+            SystemState::setReady(); 
+        }
+        
+        // Si el Slave está en IDLE, nosotros forzamos IDLE (Seguridad)
+        if (data.lastSlaveState == SLAVE_STATE_IDLE) {
+            if (SystemState::getReadySubState() != READY_SUBSTATE_IDLE) {
+                SystemState::setIdleMode();
+            }
+        }
+    } else {
+        // 6. Sin calibración: No podemos estar en READY
+        if (currentMasterState == SYSTEM_STATE_READY) {
+            SystemState::setCalibrate();
+        }
+    }
+}
+
+// sendStatusUpdate 
+// Generar y enviar paquete BLE con el estado actual del Master 
+// y datos relevantes del Slave. Este paquete se enviará periódicamente 
+// (ej. cada 500ms) o cuando haya cambios significativos en el estado.
+void sendStatusUpdate() {
+    // Obtener estado actual del Master
+    SystemBaseState_t base = SystemState::getBaseState();
+    ReadySubState_t sub = SystemState::getReadySubState();
+
+
+    // Obtener datos del Slave (última copia local, ya bajo mutex en el bucle)
+    // usamos la copia local que ya tenemos en la tarea, o la leemos de nuevo.
+    // Asumimos que globalSensorData está accesible en el ámbito de la tarea.
+
+    MasterStatusPacket_t packet;
+    packet.msg_id = 0x81;
+    packet.baseState = (uint8_t)base;
+    packet.subState = (uint8_t)sub;
+
+    // Construir alerts (bits)
+    uint8_t alerts = 0;
+    if (globalSensorData.emergency) alerts |= 0x01;
+    if (!SystemState::isCommActive()) alerts |= 0x02;
+    if (globalSensorData.batteryLow) alerts |= 0x04; // (añadir campo a SensorData si no)
+    packet.alerts = alerts;
+
+    // Progreso de calibración: si estamos en CALIBRATE, usar el progreso del Slave (si está en CALIBRATION)
+    packet.progress = (base == SYSTEM_STATE_CALIBRATE) ? globalSensorData.calibrationProgress : 0;
+
+    packet.distance = globalSensorData.sonarDistance;
+    //Serial.printf("Global distance : %d ", globalSensorData.sonarDistance);
+    // Parámetros de calibración (punto fijo)
+    packet.K_fixed = (uint16_t)(globalSensorData.calibrationK * 1000);
+    packet.tau_fixed = (uint16_t)(globalSensorData.calibrationTau * 100);
+
+    // needs_ack: si estamos en estado que requiere confirmación (ej. EMERGENCY)
+    packet.needs_ack = (base == SYSTEM_STATE_EMERGENCY || base == SYSTEM_STATE_ERROR) ? 1 : 0;
+
+    // Enviar por BLE (asumiendo que tenemos acceso a la característica)
+    if (xStatusQueue != NULL) {
+        // Usamos un timeout de 0 (o muy bajo) para no bloquear la FSM
+        if (xQueueSend(xStatusQueue, &packet, 0) != pdTRUE) {
+            // Opcional: Serial.println("⚠️ Status Queue llena");
+            Serial.println("⚠️ No se pudo enviar status update: Queue llena");
+        }
+    }
+}
 
 uint16_t fuseFrontalDistances(SensorData_t &data) {
     uint8_t confidence = 0;
@@ -116,6 +288,10 @@ void setup() {
     Serial.println("   Modo: SPI (Alta Velocidad)");
     //esp_task_wdt_init(30, false); // 30 segundos
     checkJTAGPins();
+    SystemState::begin();
+    SystemState::setReady();
+    //SystemState::setBaseState(SYSTEM_STATE_READY);
+    //SystemState::setReadySubState(READY_SUBSTATE_IDLE);
     sensors.begin();
     spiMaster.begin();
     ble.begin("CarRobot-FreeRTOS");
@@ -196,6 +372,9 @@ void setupFreeRTOS() {
     
     // Crear colas
     xControlQueue = xQueueCreate(1, sizeof(ControlCommand_t));
+    xBLECommandQueue = xQueueCreate(10, sizeof(BLECommand_t));
+    //xSPICommandQueue = xQueueCreate(10, sizeof(ControlCommand_t));
+    xStatusQueue = xQueueCreate(10, sizeof(MasterStatusPacket_t));
     sensorMutex = xSemaphoreCreateMutex();
     ControlCommand_t vacio = {0};
     xQueueOverwrite(xControlQueue, &vacio);
@@ -207,7 +386,7 @@ void setupFreeRTOS() {
 
     // Crear tasks
     // Tasks en Core 1 (Ordenadas por prioridad real)
-//    Serial.println("   Creando task SPI...");
+    // Serial.println("   Creando task SPI...");
     xTaskCreatePinnedToCore(
         spiMasterTask,
         "SPI_Master", 
@@ -217,7 +396,16 @@ void setupFreeRTOS() {
         &xSPITaskHandle,
         1
     );
-
+    // Crear tarea para la máquina de estados del Master
+    xTaskCreatePinnedToCore(
+        masterFSMTask,          // Función de la tarea
+        "MasterFSM",            // Nombre
+        4096,                   // Stack size (bytes)
+        NULL,                   // Parámetros
+        4,                      // Prioridad (mayor que tareas de comunicación)
+        NULL,                   // Handle de la tarea
+        1                       // Core (1 = segundo core en ESP32)
+    );
     /* Tasks comunes
     xTaskCreatePinnedToCore(
         safetyTask,
@@ -246,7 +434,7 @@ void setupFreeRTOS() {
         "BLE",
         8192,
         NULL,
-        1, //TASK_PRIORITY_BLE,
+        5, //TASK_PRIORITY_BLE,
         &xBLETaskHandle,
         0
     );
@@ -395,7 +583,93 @@ void processStateCommand(ControlCommand_t command) {
     break;
     }
 }
+void masterFSMTask(void *pvParameters) {
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(50); // 20 Hz
 
+    // Variables locales para la tarea
+    ControlCommand_t pendingSPICmd;      // Comando SPI pendiente
+    bool pendingSPI = false;         // Flag de comando pendiente
+
+    // Configurar callbacks de la FSM (se mantienen)
+    // Capturamos por referencia [&] para poder modificar las variables locales
+    SystemState::setOnEnterEmergency([&pendingSPICmd, &pendingSPI]() {
+        Serial.println("[Master] ¡EMERGENCIA ACTIVA!");
+        ControlCommand_t stopCmd;
+        memset(&stopCmd, 0, sizeof(stopCmd));
+        stopCmd.type = CMD_STOP;
+        stopCmd.speed = 0;
+        stopCmd.angle = 0;
+        // OPCIÓN B (Pro): Saltarse la fila y enviar YA a la cola de hardware
+        // Como la cola es de tamaño 1, esto machaca cualquier movimiento previo.
+        xQueueOverwrite(xControlQueue, &stopCmd);
+    });
+
+    SystemState::setOnExitEmergency([&pendingSPI]() {
+        pendingSPI = false;
+        Serial.println("[Master] EXIT EMERGENCY");
+    });
+
+    SystemState::setOnEnterCalibrate([&pendingSPICmd, &pendingSPI]() {
+        Serial.println("[Master] ENTER CALIBRATE");
+        ControlCommand_t calibCmd;
+        memset(&calibCmd, 0, sizeof(calibCmd));
+        calibCmd.type = CMD_CALIBRATE;
+        calibCmd.speed = 0;
+        calibCmd.angle = 0;
+        pendingSPICmd = calibCmd;
+        pendingSPI = true;
+    });
+    SystemState::setOnExitCalibrate([&pendingSPI]() {
+        Serial.println("[Master] EXIT CALIBRATE");
+        pendingSPI = false;
+    });
+    SystemState::setOnEnterReady([&pendingSPICmd, &pendingSPI]() {
+        Serial.println("[Master] ENTER READY");
+        ControlCommand_t activeCmd;
+        memset(&activeCmd, 0, sizeof(activeCmd));
+        activeCmd.type = CMD_READY;
+        activeCmd.speed = 0;
+        activeCmd.angle = 0;
+        pendingSPICmd = activeCmd;
+        pendingSPI = true;
+    });
+    SystemState::setOnExitReady([&pendingSPICmd, &pendingSPI]() {
+        Serial.println("[Master] EXIT READY");
+        ControlCommand_t idleCmd;
+        memset(&idleCmd, 0, sizeof(idleCmd));    
+        idleCmd.type = CMD_IDLE;
+        idleCmd.speed = 0;
+        idleCmd.angle = 0;
+        pendingSPICmd = idleCmd;
+        pendingSPI = true;
+    });
+
+    while (1) {
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
+        // 2. Procesar comandos BLE pendientes
+        BLECommand_t bleCmd;
+        while (xQueueReceive(xBLECommandQueue, &bleCmd, 0) == pdTRUE) {
+            // La función handleBLECommand ahora recibe referencia a pendingSPICmd y pendingSPI
+            handleBLECommand(bleCmd, pendingSPICmd, pendingSPI);
+            //xQueueOverwrite(xControlQueue, &bleCmd);
+        }
+
+        // 3. Actualizar la FSM según los datos del Slave
+        //updateFSMFromSlaveData(globalSensorData);
+
+        // 4. Si hay un comando SPI pendiente, encolarlo
+        if (pendingSPI) {
+            // xQueueOverwrite siempre tiene éxito si la cola es de tamaño 1
+            xQueueOverwrite(xControlQueue, &pendingSPICmd);
+            pendingSPI = false; // Resetear flag
+        }
+
+        // 5. Generar y enviar estado por BLE
+        sendStatusUpdate();
+    }
+}
 void spiMasterTask(void *pvParameters) {
     // 1. Validar parámetros de entrada
     if (pvParameters == nullptr) {
@@ -525,7 +799,6 @@ void navigationTask(void *pvParameters) {
 // 🚨 TASK DE SEGURIDAD (Máxima Prioridad)
 void safetyTask(void *pvParameters) {
     Serial.println("🛡️ Safety Task - Iniciada");
-    SensorData_t globalSensorData;
     bool lastEmergencyState = false;
     uint32_t failCount = 0;
     const uint32_t MAX_FAILS = 3; // Necesitamos 3 fallos seguidos para saltar
@@ -579,14 +852,20 @@ void safetyTask(void *pvParameters) {
 }
 
 void bleTask(void *pvParameters) {
-    //ble.begin("ESP32_SPI_Master");
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(50); // 50ms = 20Hz
+    MasterStatusPacket_t statusPacket;
     for(;;) {
         ble.update();
         // Obtener último comando BLE como estructura
         if (ble.hasNewCommand) { // Solo si realmente llegó algo nuevo por BLE
             BLECommand_t bleCmd = ble.getLastCommand();
+            // Enviar a la cola de la FSM
+            if (xQueueSend(xBLECommandQueue, &bleCmd, 0) != pdTRUE) {
+                Serial.println("⚠️ BLE: cola de comandos llena");
+            }
+        }
+        /*
             ControlCommand_t cmd;
             cmd.type = bleCmd.type;
             cmd.speed = bleCmd.speed;
@@ -617,17 +896,22 @@ void bleTask(void *pvParameters) {
                 autonomousMode = false; // Desactivar modo autónomo ante un stop
             } 
             // 2. Si no es emergencia, verificamos el modo
-            else if (bleCmd.targetMode == MODE_MANUAL) {
+            else if (bleCmd.targetMode == MANUAL) {
                 autonomousMode = false;  // Desactivar modo autónomo
-            }else if (bleCmd.targetMode == MODE_AUTO) {
+            }else if (bleCmd.targetMode == AUTOMATIC) {
                 autonomousMode = true; // Activar modo autónomo
             } 
             // 3. Si es autónomo y NO es un heartbeat, avisamos que ignoramos el comando
-            else if (bleCmd.type != CMD_HEARTBEAT && bleCmd.targetMode == MODE_AUTO) {
+            else if (bleCmd.type != CMD_HEARTBEAT && bleCmd.targetMode == AUTOMATIC) {
                 autonomousMode = true; // Activamos modo autónomo si el comando lo indica
                 Serial.println("⚠️ Modo Autónomo activo - Comando manual ignorado");
             }          
-        }           
+        }*/
+        // Enviar estado actual por BLE (puedes ajustar la frecuencia)
+                // 2. Enviar estado a la app (si hay paquete listo)
+        if (xQueueReceive(xStatusQueue, &statusPacket, 0) == pdTRUE) {
+            ble.sendBLEPacket(&statusPacket);
+        }
         // Esperar usando delay fijo para timing consistente
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }

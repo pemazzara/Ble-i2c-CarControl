@@ -20,7 +20,7 @@ public:
                        uint8_t echoPin = SONAR_ECHO_PIN);
     
     void begin();
-    float sonarApproachRateRMT();
+    void sonarUpdate();
     bool isEmergency();
     bool isSensorOK();
     void updateSonarData();
@@ -29,11 +29,14 @@ public:
     bool getLatestSonarData(SonarSensorData_t &data);
     float getApproachSpeed(); // Velocidad de aproximación (cm/s o mm/s)
     bool initialized;
+
 private:
     uint8_t SONAR_TRIG;
     uint8_t SONAR_ECHO;
-    SonarSensorData_t sonar_data;
+    
     SemaphoreHandle_t data_mutex;
+    SonarSensorData_t sonar_data;
+
     uint16_t duration = 0;
     // Para cálculo de velocidad
     uint16_t lastSonarDistance = 0;

@@ -29,7 +29,8 @@ void BluetoothLeConnect::begin(const char* deviceName) {
     CHARACTERISTIC_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
   );
-  pDataCharacteristic->addDescriptor(new NimBLE2904());
+  pDataCharacteristic->setCallbacks(new DataCallbacks());
+  //pDataCharacteristic->addDescriptor(new NimBLE2904());
 
   // Característica para recibir comandos
   pCommandCharacteristic = pService->createCharacteristic(
@@ -104,7 +105,15 @@ void BluetoothLeConnect::MyServerCallbacks::onDisconnect(NimBLEServer* pServer) 
   Serial.println("Dispositivo desconectado");
 }
 
-
+void BluetoothLeConnect::sendBLEPacket(MasterStatusPacket_t* packet) {
+    if (deviceConnected) {
+        bool hasSubscribers = pDataCharacteristic->getSubscribedCount() > 0;
+        Serial.printf("Enviando... Suscriptores: %d | Distancia: %d\n", hasSubscribers, packet->distance);
+        
+        pDataCharacteristic->setValue((uint8_t*)packet, sizeof(MasterStatusPacket_t));
+        pDataCharacteristic->notify(); 
+    }
+}
 
 void BluetoothLeConnect::CommandCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
   NimBLEAttValue value = pCharacteristic->getValue();
@@ -124,7 +133,7 @@ void BluetoothLeConnect::CommandCallbacks::onWrite(NimBLECharacteristic* pCharac
     Serial.printf("  Speed: %d\n", bleConnect->lastCommand.speed);
     Serial.printf("  Angle: %d°\n", bleConnect->lastCommand.angle);
     Serial.printf("  TargetMode: %s\n", 
-                  bleConnect->lastCommand.targetMode == MODE_AUTO ? "AUTO" : "MANUAL");
+                  bleConnect->lastCommand.targetMode == AUTOMATIC ? "AUTO" : "MANUAL");
     Serial.printf("  Priority: %d\n", bleConnect->lastCommand.priority);
     
 }

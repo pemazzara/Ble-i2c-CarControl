@@ -4,18 +4,19 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "MotorControl.h"
-#include "UltraSonicMeasure.h"
+#include "sonar_integration.h"
 #include "SpeedController.h"
 #include "SPISlave.h"
 #include "SPIDefinitions.h"
 #include "esp_task_wdt.h"
 #include "esp_heap_caps.h"
 
-
+#define CONTROL_PERIOD_MS 20
+#define CONTROL_PERIOD_S (CONTROL_PERIOD_MS / 1000.0f)
 // =========================================================
 // VARIABLES GLOBALES
 // =========================================================
-//SonarSensorData_t g_sensorData = {0, false};  
+
 MotorControl motorController;
 UltraSonicMeasure sonar;
 SpeedController speedController;
@@ -37,6 +38,7 @@ void heapMonitorTask(void* pvParameters);
 void logSystemStatus();
 void printResetReason();
 unsigned long lastMotorCheck = 0;
+SonarSensorData_t sonar_data;
 
 
 void setup_tasks() {
@@ -122,8 +124,9 @@ void heapMonitorTask(void* pvParameters) {
 void sonarTask(void* pvParameters) {
     UBaseType_t stack_start = uxTaskGetStackHighWaterMark(NULL);
     Serial.printf("[SonarTask] Stack inicial libre: %d palabras\n", stack_start);
-    esp_task_wdt_add(NULL);
-    
+    //esp_task_wdt_add(NULL);
+    esp_task_wdt_add(xTaskGetCurrentTaskHandle());
+
     // Variables locales para optimizar
     uint32_t last_measurement = 0;
     uint32_t last_stack_check = 0;
@@ -154,18 +157,21 @@ void sonarTask(void* pvParameters) {
             measurement_count++;
             
             // Actualizar datos del sensor
-            //sonar.sonarApproachRateRMT();
-            sonar.update();
+            sonar.sonarUpdate();
+           
             // Verificar emergencia
             if (sonar.isEmergency()) {
                 motorController.emergencyStop();
+                sonar.getLatestSonarData(sonar_data);
                 Serial.printf("🚨 EMERGENCIA SONAR: %dmm\n", 
-                             (int)sonar.sonarApproachRateRMT());
+                             (int)sonar_data.distance);
             }
     
         }
-        // 3. Pausa optimizada
-        vTaskDelay(pdMS_TO_TICKS(10));
+        
+        //vTaskDelay(pdMS_TO_TICKS(10));        
+        // 3. Pausa optimizada, Frecuencia del sonar: ≈ 50 Hz (período 20 ms).
+        vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
     }
 }
 void motorTask(void *pvParameters) {
@@ -190,7 +196,6 @@ void motorTask(void *pvParameters) {
         if (SPISlave::isCommandReady()) {
             ControlCommand_t cmd = SPISlave::getLastCommand();
             Serial.printf("✅ Cmd Listo: Type=%d, PWM: %d, Angle: %d\n", cmd.type, cmd.speed, cmd.angle);   
-            //motorController.handleSPICommand(&cmd);
             speedController.setTargetFromMaster(cmd);
             last_valid_command_ms = now; // Actualizar cada vez que llega algo del Master
         }
@@ -201,10 +206,7 @@ void motorTask(void *pvParameters) {
             motorController.setPWM(0, 0, true);
         }else {
             speedController.updateControl();
-            //motorController.updateRamping();
-        }
-        
-        
+        }              
     }
 }
 
@@ -337,7 +339,8 @@ void logSystemStatus() {
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 5000) {
         // Usar las nuevas estructuras, no las viejas
-        Serial.printf("[Status] Sonar: %dmm | ", (int)sonar.sonarApproachRateRMT());
+        sonar.getLatestSonarData(sonar_data);
+        Serial.printf("[Status] Sonar: %dmm | ", (int)sonar_data.distance);
         Serial.printf("Motor: L=%d, R=%d\n", 
                      motorController.getCurrentLeft(),
                      motorController.getCurrentRight());

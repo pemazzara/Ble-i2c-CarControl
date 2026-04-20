@@ -5,6 +5,7 @@
 #include <driver/spi_master.h>
 #include <stdint.h>
 #include "SPIDefinitions.h"
+#include "system_state.h"
 #include "esp_task_wdt.h"
 
 // Pines HSPI ESP32-S3

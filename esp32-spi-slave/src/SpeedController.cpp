@@ -1,6 +1,6 @@
 
 #include "SpeedController.h"
-#include "UltraSonicMeasure.h"
+#include "sonar_integration.h"
 #include "MotorControl.h"
 
 extern UltraSonicMeasure sonar;
@@ -17,7 +17,11 @@ void SpeedController::begin() {
 
 void SpeedController::updateControl() {
         // 1. Medir velocidad actual con el sonar
-        avel_current = sonar.sonarApproachRateRMT(); // Δtiempo/Δt
+        SonarSensorData_t sonarData;
+        sonar.sonarUpdate();
+        sonar.getLatestSonarData(sonarData);
+        
+        avel_current = sonarData.a_vel; // Δtiempo/Δt
         
         // 2. Calcular error
         float error = target_avel - avel_current;
@@ -30,8 +34,6 @@ void SpeedController::updateControl() {
     
         // El valor base puede ser el último PWM exitoso
         //static int current_pwm = 300;
-        //current_pwm += (int)correction;
-        //current_pwm = constrain(current_pwm, 0, 1023);
 
         // 4. Calcular PWM (partiendo de un valor base)
         if (target_avel > 0) {
@@ -45,9 +47,9 @@ void SpeedController::updateControl() {
         }
         
         // 5. Aplicar a motores (con el ángulo recibido del Master)
-       
-        //motorController.setPWM(current_pwm, base_angle, false);
-        motorController.update(current_pwm);
+        //motorController.setTargetAngle(base_angle);
+        //motorController.update(current_pwm);
+        motorController.setPWM(current_pwm, base_angle, false);
         // 6. Guardar último error para la próxima iteración       
         last_error = error;
     }

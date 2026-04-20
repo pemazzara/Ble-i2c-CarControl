@@ -5,6 +5,20 @@
 #include <Arduino.h>
 #include "SPIDefinitions.h"
 
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t msg_id;      // Offset 0
+    uint8_t baseState;   // Offset 1
+    uint8_t subState;    // Offset 2
+    uint8_t alerts;      // Offset 3
+    uint8_t progress;    // Offset 4
+    uint16_t distance;   // Offset 5 (¡Sin padding gracias al pack!)
+    uint16_t K_fixed;    // Offset 7
+    uint16_t tau_fixed;  // Offset 9
+    uint8_t needs_ack;   // Offset 11
+} MasterStatusPacket_t;
+#pragma pack(pop)
+/*
 #pragma pack(1)  // Crucial para que Android no lea basura por alineación de bytes
 typedef struct {
     uint8_t msg_id;      // 0x81
@@ -20,6 +34,7 @@ typedef struct {
     
     uint8_t needs_ack;   // 1 si requiere confirmación del usuario para recuperar
 } MasterStatusPacket_t;
+ */
 typedef struct __attribute__((packed)) {
     uint8_t type;          // ControlCommandType
     int16_t speed;         
@@ -39,17 +54,23 @@ public:
   void sendData(String data);
   bool isConnected();
   BLECommand_t getLastCommand();
+  void sendBLEPacket(MasterStatusPacket_t* packet);
   bool hasNewCommand;
 
 private:
     BLECommand_t lastCommand;  // Cambiar de String a BLECommand_t
      
-
+  class DataCallbacks: public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, ble_gap_conn_desc* desc, uint16_t subValue) {
+        Serial.printf("🔔 ¡ALGUIEN SE SUSCRIBIÓ! Valor: %d\n", subValue);
+    }
+  };
   class MyServerCallbacks : public NimBLEServerCallbacks {
   public:
     MyServerCallbacks(BluetoothLeConnect* connect) : bleConnect(connect) {}
     void onConnect(NimBLEServer* pServer) override;
     void onDisconnect(NimBLEServer* pServer) override;
+  
   private:
     BluetoothLeConnect* bleConnect;
   };

@@ -92,7 +92,10 @@ void MotorControl::begin() {
                   ledc_channel_a.channel, 
                   ledc_channel_b.channel);
 }
-
+void MotorControl::setTargetAngle(int16_t angle) {
+    if (abs(angle) > 360) return;
+    targetAngle = angle;
+}
 void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
     // Verificar que LEDC esté inicializado
     if (!ledc_initialized) {
@@ -148,11 +151,18 @@ void MotorControl::applyHardwarePWM(int16_t left, int16_t right) {
 }
 
 
-void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
+void MotorControl::setPWM(int16_t pwm, int16_t targetAngle, bool immediate) {
     if (!ledc_initialized) return;
-    if (abs(angle) > 360) return;
+    if (abs(targetAngle) > 360) return;
+        // Suavizado del ángulo (Interpolación Lineal hacia el target)
+    // 1. Suavizar el ángulo (Slew Rate)
+    const float ANGLE_STEP = 3.0f;
+    if (abs(targetAngle - currentInterpolatedAngle) > 0.5f) {
+        if (currentInterpolatedAngle < targetAngle) currentInterpolatedAngle += ANGLE_STEP;
+        else currentInterpolatedAngle -= ANGLE_STEP;
+    }
     
-    float rad = (angle * M_PI) / 180.0;
+    float rad = (currentInterpolatedAngle * M_PI) / 180.0;
     float x = cos(rad);
     float y = sin(rad);
     
@@ -168,9 +178,7 @@ void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
         targetRightSpeed = 0;
         currentLeftSpeed = 0;
         currentRightSpeed = 0;
-        applyHardwarePWM(0, 0);
     } else if (immediate  && pwm != 0) {
-         applyHardwarePWM(rawLeft, rawRight);
          targetLeftSpeed = rawLeft;
          targetRightSpeed = rawRight;
          currentLeftSpeed = rawLeft;
@@ -181,8 +189,9 @@ void MotorControl::setPWM(int16_t pwm, int16_t angle, bool immediate) {
         targetRightSpeed = rawRight;
         lastUpdateTime = millis();
     }
+    applyHardwarePWM(targetLeftSpeed, targetRightSpeed);
 }
-
+/*
 void MotorControl::update(int16_t currentRampedPWM) { // Se llama en el loop de control (ej. 50Hz)
     // Suavizado del ángulo (Interpolación Lineal hacia el target)
     // 1. Suavizar el ángulo (Slew Rate)
@@ -216,7 +225,7 @@ void MotorControl::applyKinematics(int16_t pwm, int16_t angle) {
     targetLeftSpeed = (int16_t)constrain(rawLeft, -MAX_PWM, MAX_PWM);
     targetRightSpeed = (int16_t)constrain(rawRight, -MAX_PWM, MAX_PWM);
     lastUpdateTime = millis();
-    this->applyHardwarePWM(targetLeftSpeed, targetRightSpeed);
+    applyHardwarePWM(targetLeftSpeed, targetRightSpeed);
 }
 void MotorControl::updateRamping() {
     if (!ledc_initialized) return;
@@ -255,7 +264,7 @@ void MotorControl::updateRamping() {
     // Enviar al hardware
     this->applyHardwarePWM(currentLeftSpeed, currentRightSpeed);
 }
-
+*/
 void MotorControl::emergencyStop() {
     targetLeftSpeed = 0;
     targetRightSpeed = 0;

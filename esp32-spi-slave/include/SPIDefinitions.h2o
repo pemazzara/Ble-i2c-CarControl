@@ -10,43 +10,28 @@
 #define SPI_MAGIC_SLAVE  0x5A
 
 // --- ENUMS ---
-/*Android definitions
-    CMD_STOP(0x00),     // Parada de emergencia
-    CMD_DRIVE(0x01),              // Movimiento con velocidad+ángulo
-    CMD_HEARTBEAT(0x02),
-    CMD_READ_SENSORS(0x03),      // Leer sensores
-    CMD_MOVE_DISTANCE(0x04),
-    CMD_SET_MODE(0x05),          // Cambiar modo de operación
-    CMD_STATUS(0x06),
-    CMD_IDLE(0x07),
-    CMD_READY(0x08),
-    RESET_EMERGENCY(0x09),
-    RECONNECT(0x0A),
-    CMD_CALIBRATE(0x0B);
-    */     
 typedef enum : uint8_t {
     CMD_STOP = 0,
-    CMD_DRIVE = 1,
-    CMD_HEARTBEAT = 2,
-    CMD_READ_SENSORS = 3,
-    CMD_MOVE_DISTANCE = 4,
-    CMD_SET_MODE = 5,
-    CMD_STATUS = 6,
-    CMD_IDLE = 7,
-    CMD_READY = 8,
-    RESET_EMERGENCY = 9,
-    RECONNECT = 10,
-    CMD_CALIBRATE = 11
+    CMD_DRIVE,
+    CMD_HEARTBEAT,
+    CMD_READ_SENSORS,
+    CMD_MOVE_DISTANCE,
+    CMD_SET_MODE,
+    CMD_STATUS,
+    CMD_CALIBRATE
 } ControlCommandType;
 
 typedef enum : uint8_t {
-    JOYSTIC = 0,
-    ROTATION = 1,
-    MANUAL = 2,
-    AUTOMATIC = 3,
-    CALIBRATION = 4
+    MODE_MANUAL = 2,
+    MODE_AUTO = 3,
 } ControlMode;
 
+typedef enum {
+    SLAVE_STATE_IDLE = 0,
+    SLAVE_STATE_CALIBRATION,
+    SLAVE_STATE_READY,
+    SLAVE_STATE_EMERGENCY
+} SlaveState_t;
 
 typedef enum : uint8_t {
     TYPE_SENSORS = 0,
@@ -68,7 +53,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t msg_id;              // ID de mensaje para tracking
     uint8_t magic_word;           // 0xA5    
-    ControlCommand_t payload;     // 8 bytes
+    ControlCommand_t payload;     // 10 bytes
     uint8_t padding[4]; // 👈 Esto completa los 16 bytes (1+1+8+4+2 = 16)
     uint16_t checksum;            // 2 bytes
 } SPIFrame_t;
@@ -80,7 +65,7 @@ typedef struct {
     // --- CONTROL & ALINEACIÓN (4 bytes) ---
     uint8_t  msg_id;       // Offset 0
     uint8_t  magic_word;   // Offset 1 (0x5A)
-    ResponseType  type;         // Offset 2 (0=Telemetría Motor, 1=Sistema)
+    ResponseType  type;    // Offset 2 (0=Telemetría Motor, 1=Sistema)
     uint8_t  last_rx_id; // Offset 3 (ERRORES: Overcurrent, Temp, Stall)
 
     // --- PAYLOAD ALINEADO A 4-BYTES (Offset 4) ---
@@ -136,11 +121,6 @@ typedef struct {
     uint8_t lastSlaveFlags; // El 'flags' que viene del payload del slave
     uint8_t lastSlaveState; // El 'status' que viene del payload del slave
     uint16_t lastSyncTimestamp; // Última vez que se sincronizó con el Slave
-    float calibrationK;                         // ganancia estática
-    float calibrationTau;                       // constante de tiempo
-    bool calibrationValid;
-    uint8_t calibrationProgress; // 0-100% (si el Slave está en calibración)
-    bool batteryLow; // (opcional, si el Slave envía este dato o lo inferimos de alguna forma)
 } SensorData_t;
 
 typedef struct {

@@ -297,34 +297,32 @@ bool SPIMaster::sendCommand(const ControlCommand_t *cmd) {
     errorCounter++;
     return false;
 }
-
+/*
 void processResponse(const SPIResponseFrame_t& res) {
     if (res.type == TYPE_SENSORS) {
         Serial.printf("Distancia: %d mm\n", res.payload.motors.distance);
     } else if (res.type == TYPE_SYSTEM) {
         Serial.printf("Progreso Calibración: %d%%\n", res.payload.system.progress);
     }
-}
+}*/
 bool SPIMaster::processResponse(const SPIResponseFrame_t& response) {
-    if (response.type == TYPE_SENSORS) {
-        if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(10)) != pdTRUE) {        
-        return false; // No pudimos acceder a los datos, la respuesta no se procesó
+    
+    if (response.type == TYPE_SENSORS && xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(10)) == pdTRUE) {        
         // 1. Actualización de estados básicos
         globalSensorData.sonarDistance = response.payload.motors.distance;
         globalSensorData.sensorStatus = response.payload.motors.motor_flags;
         globalSensorData.lastTofUpdate = millis();
         xSemaphoreGive(sensorMutex);
-    }
-        Serial.printf("Distancia: %d mm\n", response.payload.motors.distance);
-    } else if (response.type == TYPE_SYSTEM) {
-        if (response.payload.system.state == SLAVE_STATE_READY && (response.payload.system.K_fixed == 0 || response.payload.system.tau_fixed == 0)) {
+        //Serial.printf("Distancia: %d mm\n", response.payload.motors.distance);
+    } 
+    else if (response.type == TYPE_SYSTEM && response.payload.system.state == SLAVE_STATE_READY && (response.payload.system.K_fixed == 0 || response.payload.system.tau_fixed == 0)) {
             //globalSensorData.calibration_valid = false;
-            xSemaphoreGive(sensorMutex);        
             Serial.println("[SPI] Inconsistencia: Slave READY sin parámetros. Re-calibrando...");
             return startCalibration(); // Esto enviará el comando en el siguiente ciclo
+            Serial.printf("Progreso Calibración: %d%%\n", response  .payload.system.progress);
         }
-        Serial.printf("Progreso Calibración: %d%%\n", response  .payload.system.progress);
-    }
+        
+
 
 /*
     // 2. Verificación de Integridad de Calibración
@@ -397,18 +395,15 @@ void SPIMaster::testCommunication() {
     bool success = sendCommand(&testCmd);
     Serial.println(success ? "  ✅ OK" : "  ❌ FALLÓ");
     delay(200);
-    
-    // Test 2: SET_MODE a MANUAL
-    Serial.println("Test 2: Configurando modo MANUAL...");
-
-    testCmd.type = CMD_SET_MODE;
-    testCmd.speed = 0;
-    testCmd.angle = 0;
-    testCmd.timestamp = millis();
-    
-    success = sendCommand(&testCmd);
-    Serial.println(success ? "  ✅ OK" : "  ❌ FALLÓ");
-    delay(200);
+    // Test 2: Leer sensores (debería actualizar globalSensorData)
+    Serial.println("Test 2: Solicitando datos de sensores...");
+    uint16_t distance;
+    uint8_t status;
+    if (getCleanSensorData(distance, status)) {
+        Serial.printf("  ✅ Datos recibidos: Distancia=%d mm, Flags=0x%02X\n", distance, status);
+    } else {
+        Serial.println("  ❌ FALLÓ al obtener datos de sensores");
+    }     
     
     // Test 3: MOVE_FORWARD
     Serial.println("Test 3: Enviando MOVE_FORWARD...");

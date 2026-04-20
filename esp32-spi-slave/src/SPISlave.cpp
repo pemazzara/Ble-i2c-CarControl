@@ -5,6 +5,7 @@
 #include "freertos/semphr.h" // Header necesario
 
 
+
 // Variables estáticas
 SPIResponseFrame_t* SPISlave::spi_tx_buffer = nullptr       ;
 SPIFrame_t* SPISlave::spi_rx_buffer = nullptr;
@@ -22,7 +23,7 @@ extern UltraSonicMeasure sonar;
 // Cambiar la declaración de speedCtrl a un puntero o referencia, 
 // y verificar que esté inicializado con un método isReady().
 extern SpeedController* pSpeedCtrl;
-SonarSensorData_t sensor_data;
+SonarSensorData_t s_data;
 
 SPISlave::SPISlave(MotorControl &motor, UltraSonicMeasure &sensor) {
     // Guardamos la dirección de los objetos
@@ -161,7 +162,8 @@ bool SPISlave::isCommandReady() {
 
 void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
     memset(&txFrame, 0, sizeof(SPIResponseFrame_t)); // Limpiar todo, incluyendo padding
-    
+    int16_t avel_scaled;
+    int16_t error_scaled;
     // 🛡️ GUARDIA 1: Buffers de memoria
     if (spi_tx_buffer == nullptr) return; 
     // 🛡️ GUARDIA 2: Verificar que los periféricos están vinculados
@@ -178,14 +180,11 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
         // 2. Tipo de respuesta (puedes expandir esto según tus necesidades)
     txFrame.type = TYPE_SENSORS; // Por defecto, respondemos con datos de sensores
     txFrame.payload.motors.motor_flags = 0;
-
+    
     // 2. Motores (Verificar que el puntero no sea NULL antes de usar ->)
     if (motor_controller != nullptr && motor_controller->isInitialized()) {
         txFrame.payload.motors.rpm_left = motor_controller->getCurrentLeft();
         txFrame.payload.motors.rpm_right = motor_controller->getCurrentRight();
-        txFrame.payload.motors.a_vel = 0; // Valor por defecto, se actualizará si speedCtrl está listo  
-        txFrame.payload.motors.distance = sensor_manager->getLatestSonarData(sensor_data) ? sensor_data.distance : 0xFFFF; // Si no hay datos, poner un valor inválido
-        txFrame.payload.motors.motor_flags = motor_controller->getStatusFlags(); // Implementa este método para obtener bits de error
 
         // Si el controlador está disponible, añadir datos
         if (pSpeedCtrl != nullptr) {
@@ -193,8 +192,8 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
             float error = pSpeedCtrl->getLastError();
 
             // Escalar y limitar
-            int16_t avel_scaled = (int16_t)constrain(avel * 1000, -32768, 32767);
-            int16_t error_scaled = (int16_t)constrain(error * 1000, -32768, 32767);
+            avel_scaled = (int16_t)constrain(avel * 1000, -32768, 32767);
+            error_scaled = (int16_t)constrain(error * 1000, -32768, 32767);
             txFrame.payload.motors.a_vel = (uint16_t)(avel_scaled < 0 ? -avel_scaled : avel_scaled); // valor absoluto de la velocidad
         }
         
@@ -208,14 +207,13 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
 
     // 3. Sensores
     if (sensor_manager != nullptr && sensor_manager->initialized) {
-        SonarSensorData_t s_data;
         if (sensor_manager->getLatestSonarData(s_data)) {
             txFrame.payload.motors.distance = s_data.distance;
-                        // Bit 2: Obstáculo Crítico (Basado en Sonar del Slave)
+            // Bit 2: Obstáculo Crítico (Basado en Sonar del Slave)
             if (s_data.distance > 0 && s_data.distance < 50) {
                 txFrame.payload.motors.motor_flags |= 0x04; 
             }
-
+            
             txFrame.payload.motors.a_vel = (uint16_t)(s_data.a_vel < 0 ? -s_data.a_vel : s_data.a_vel); // valor absoluto de la velocidad
             // Opcional: indicar dirección en el campo status
             // Dirección: bit 5 = 1 si acercándose (avel negativo)
@@ -229,7 +227,10 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
         txFrame.payload.motors.distance = 0xFFFF;
         txFrame.payload.motors.motor_flags |= 0x08;
     }
-
+    Serial.printf("📡 Respuesta preparada: Distancia=%d mm, Avel=%.2f m/s, Flags=0x%02X\n", 
+                  txFrame.payload.motors.distance, 
+                  s_data.a_vel, 
+                  txFrame.payload.motors.motor_flags);
     // 4. Checksum y Copia a memoria DMA
     txFrame.checksum = calcularChecksum((void*)&txFrame, sizeof(SPIResponseFrame_t) - 2);
     if (spi_tx_buffer != nullptr) {
