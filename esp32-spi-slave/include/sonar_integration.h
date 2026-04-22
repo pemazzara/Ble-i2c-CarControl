@@ -26,7 +26,7 @@ public:
     void updateSonarData();
     void update();
     // Getters                // Diagnóstico
-    bool getLatestSonarData(SonarSensorData_t &data);
+    bool getLastSonarData(SonarSensorData_t &data);
     float getApproachSpeed(); // Velocidad de aproximación (cm/s o mm/s)
     bool initialized;
 

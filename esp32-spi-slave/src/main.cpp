@@ -5,11 +5,12 @@
 #include <freertos/queue.h>
 #include "MotorControl.h"
 #include "sonar_integration.h"
-#include "SpeedController.h"
+#include "speed_controller.h"
 #include "SPISlave.h"
 #include "SPIDefinitions.h"
 #include "esp_task_wdt.h"
 #include "esp_heap_caps.h"
+#include "slave_fsm.h"
 
 #define CONTROL_PERIOD_MS 20
 #define CONTROL_PERIOD_S (CONTROL_PERIOD_MS / 1000.0f)
@@ -20,19 +21,26 @@
 MotorControl motorController;
 UltraSonicMeasure sonar;
 SpeedController speedController;
-SPISlave spiSlave(motorController, sonar); 
+CalibrationParams calibParams;
+SPISlave spiSlave(motorController, sonar);
+SlaveFSM& slaveFSM = SlaveFSM::getInstance(); 
 
 // =========================================================
 // Handles de tareas
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t spiTaskHandle = NULL;
 TaskHandle_t sonarTaskHandle = NULL;
+TaskHandle_t slaveFSMTaskHandle = NULL;
+
+QueueHandle_t xMasterCommandQueue;  // frames recibidos del Master
+QueueHandle_t xSlaveFeedbackQueue;   // frames a enviar al Master
 
 // =========================================================
 // DECLARACIÓN DE TAREAS
 // =========================================================
 void motorTask(void *pvParameters);
 void sonarTask(void *pvParameters);
+void slaveFSMTask(void *pvParameters);
 void spiSlaveTask(void *pvParameters);
 void heapMonitorTask(void* pvParameters);
 void logSystemStatus();
@@ -43,6 +51,15 @@ SonarSensorData_t sonar_data;
 
 void setup_tasks() {
     Serial.println("🔧 Configurando tareas...");
+        xTaskCreatePinnedToCore(
+        slaveFSMTask,
+        "SlaveFSM",
+        4096,        // 4KB stack (ajustar según necesidades)
+        NULL,
+        4,  // Prioridad media
+        &slaveFSMTaskHandle,   // Handle
+        1   // Core 1
+    );
     // Tarea MOTOR en Core 1 (alta prioridad, mucho stack)
     xTaskCreatePinnedToCore(
         motorTask,
@@ -119,7 +136,16 @@ void heapMonitorTask(void* pvParameters) {
     }
 }*/
 
+void slaveFSMTask(void *pvParameters) {
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50 Hz
 
+    while (1) {
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        SlaveFSM::getInstance().update();
+        esp_task_wdt_reset();  // si quieres que esta tarea también alimente el watchdog
+    }
+}
 
 void sonarTask(void* pvParameters) {
     UBaseType_t stack_start = uxTaskGetStackHighWaterMark(NULL);
@@ -162,7 +188,7 @@ void sonarTask(void* pvParameters) {
             // Verificar emergencia
             if (sonar.isEmergency()) {
                 motorController.emergencyStop();
-                sonar.getLatestSonarData(sonar_data);
+                sonar.getLastSonarData(sonar_data);
                 Serial.printf("🚨 EMERGENCIA SONAR: %dmm\n", 
                              (int)sonar_data.distance);
             }
@@ -174,6 +200,7 @@ void sonarTask(void* pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
     }
 }
+/*
 void motorTask(void *pvParameters) {
     esp_task_wdt_add(NULL);  
     // Variables locales para optimizar stack
@@ -182,6 +209,9 @@ void motorTask(void *pvParameters) {
     uint32_t last_ramp_update = 0;
     uint32_t command_count = 0;
     uint32_t last_valid_command_ms = millis();
+
+
+    SlaveFSM& fsm = SlaveFSM::getInstance();
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50Hz
@@ -199,61 +229,64 @@ void motorTask(void *pvParameters) {
             speedController.setTargetFromMaster(cmd);
             last_valid_command_ms = now; // Actualizar cada vez que llega algo del Master
         }
-        
+                // --- ESTADO BASE ---
+        if (fsm.getCurrentState() != SLAVE_STATE_READY) {
+            motorController.setPWM(0, 90, true);
+            continue; 
+        }
         
         // --- WATCHDOG DE SEGURIDAD SPI ---
         if (now - last_valid_command_ms > 500) {
-            motorController.setPWM(0, 0, true);
-        }else {
+            motorController.setPWM(0, 90, true);
+            fsm.setEmergencyFlag();
+        }
+        else {
             speedController.updateControl();
-        }              
+        }             
     }
 }
-
-/*
-void motorTask(void* pvParameters) {
-    esp_task_wdt_add(NULL);
-    Serial.println("[MotorTask] Iniciada");
-     
+*/
+void motorTask(void *pv) {
+    esp_task_wdt_add(NULL);  
     // Variables locales para optimizar stack
     uint32_t last_stack_check = 0;
     uint32_t last_spi_check = 0;
     uint32_t last_ramp_update = 0;
     uint32_t command_count = 0;
     uint32_t last_valid_command_ms = millis();
-    
-    while(1) {
-        // 2. Resetear watchdog en cada iteración
+
+
+    SlaveFSM& fsm = SlaveFSM::getInstance();
+
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50Hz
+    while (1) {
         esp_task_wdt_reset();
         uint32_t now = millis();
-        static uint32_t stop_until = 0;
 
-        // 2. Procesar comandos SPI si hay disponibles
+        // 1. RECEPCIÓN SPI: Solo actualiza datos, no decide acciones.
         if (SPISlave::isCommandReady()) {
             ControlCommand_t cmd = SPISlave::getLastCommand();
-            motorController.handleSPICommand(&cmd);
-            // Señalar que hemos procesado el comando
-            SPISlave::commandProcessed();
-            last_valid_command_ms = now; // Actualizar cada vez que llega algo del Master
-        }
-
-        // --- WATCHDOG DE SEGURIDAD SPI ---
-        if (now - last_valid_command_ms > 500) {
-            // Si el Master no ha dicho nada en 0.5s, paramos por seguridad
-            motorController.setDrive(0, 0, true);
-        }
-
-        // 3. Actualizar rampas de motor (50Hz)
-        if (now - last_ramp_update >= 20) {
-            last_ramp_update = now;
-            motorController.updateRamping();
+            speedController.setTargetFromMaster(cmd);
+            last_valid_command_ms = now;
         }
         
-        // 4. Pausa mínima
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-}*/
+        // 2. WATCHDOG SPI: Si el Master muere, avisamos a la FSM.
+        if (now - last_valid_command_ms > 500) {
+            // En lugar de frenar aquí, forzamos a la FSM a salir de READY
+            fsm.setEmergencyFlag(); 
+        }
 
+        // 3. SEGURIDAD HARDWARE (Interlock): 
+        // Si la FSM no está en READY, aseguramos el estado de parada aquí 
+        // como última línea de defensa.
+        if (fsm.getCurrentState() != SLAVE_STATE_READY) {
+            motorController.setPWM(0, 90, true);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10)); // Más rápida que la FSM para reaccionar antes
+    }
+}
 void spiSlaveTask(void* pvParameters) {
     esp_task_wdt_add(NULL);
     // Crear una referencia a spiSlave
@@ -339,7 +372,7 @@ void logSystemStatus() {
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 5000) {
         // Usar las nuevas estructuras, no las viejas
-        sonar.getLatestSonarData(sonar_data);
+        sonar.getLastSonarData(sonar_data);
         Serial.printf("[Status] Sonar: %dmm | ", (int)sonar_data.distance);
         Serial.printf("Motor: L=%d, R=%d\n", 
                      motorController.getCurrentLeft(),
@@ -382,7 +415,11 @@ void setup() {
     
     motorController.begin();
     speedController.begin();
-       
+    SlaveFSM& slave_fsm = SlaveFSM::getInstance();
+    slave_fsm.begin();
+    slave_fsm.setMotorController(&motorController);
+    slave_fsm.setSonar(&sonar);
+    slave_fsm.setSpeedController(&speedController);  
     // Inicializar SPI (usa referencias del constructor)
 
     //spiSlave.checkHealth();
@@ -397,7 +434,8 @@ void setup() {
     
     // 2. Crear primitivas FreeRTOS // Crear tareas
     setup_tasks();
-    
+    speedController.setCalibration(calibParams.K, calibParams.tau); // calcula todo internamente
+
     Serial.println("✅ Sistema FreeRTOS iniciado correctamente");
     Serial.println("   - SPI Slave en Core 1");
     Serial.println("   - Esperando comandos del Master...");

@@ -207,7 +207,7 @@ void SPISlave::prepareResponse(SPIResponseFrame_t &txFrame) {
 
     // 3. Sensores
     if (sensor_manager != nullptr && sensor_manager->initialized) {
-        if (sensor_manager->getLatestSonarData(s_data)) {
+        if (sensor_manager->getLastSonarData(s_data)) {
             txFrame.payload.motors.distance = s_data.distance;
             // Bit 2: Obstáculo Crítico (Basado en Sonar del Slave)
             if (s_data.distance > 0 && s_data.distance < 50) {

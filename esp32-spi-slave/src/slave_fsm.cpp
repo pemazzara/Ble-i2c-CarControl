@@ -1,9 +1,11 @@
 #include "slave_fsm.h"
-#include "motor_controller.h"   // Para control de motores
+#include "MotorControl.h"   // Para control de motores
 #include "sonar_integration.h" // para obtener distancia
 #include "speed_controller.h"    // Para control PID de velocidad|
 #include "Preferences.h"         // Para almacenamiento en EEPROM
-#include "spi_protocol.h"       // Para las estructuras de datos de comunicación
+#include "SPIDefinitions.h"       // Para las estructuras de datos de comunicación
+
+SonarSensorData_t data;
 
 void SlaveFSM::onExitIdle() {}
 void SlaveFSM::onExitReady() {
@@ -27,8 +29,10 @@ SlaveFSM& SlaveFSM::getInstance() {
     
 void SlaveFSM::begin() {
     fsmMutex = xSemaphoreCreateMutex();
-    currentState = SLAVE_STATE_IDLE;
-    previousState = SLAVE_STATE_IDLE;
+    //currentState = SLAVE_STATE_IDLE;
+    //previousState = SLAVE_STATE_IDLE;
+    currentState = SLAVE_STATE_READY;
+    previousState = SLAVE_STATE_READY;
     stateStartTime = millis();
     calibrationRunning = false;
     calibParams.valid = false;
@@ -66,10 +70,8 @@ void SlaveFSM::update() {
             break;
 
         case SLAVE_STATE_READY:
-            // Leer sensores y actualizar datos de estado
-            //lastDistance = sonar->sonarApproachRateRMT(); // distancia actual
-            SonarSensorData_t data;
-            if(sonar->getLatestSonarData(data)){
+            // Leer sensores y actualizar datos de estado           
+            if(sonar->getLastSonarData(data)){
                 lastDistance = data.distance;
                 emergencyFlag = data.emergency;
                 movingFlag = data.a_vel > 0.05f; // umbral de movimiento
@@ -96,13 +98,13 @@ void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) 
     if (xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
 
     switch (commandType) {
-        case CMD_START_CALIB:
+        case CMD_CALIBRATE:
             if (currentState == SLAVE_STATE_IDLE) {
                 transitionTo(SLAVE_STATE_CALIBRATION);
             }
             break;
 
-        case CMD_ACTIVE:
+        case CMD_READY:
             if (currentState == SLAVE_STATE_READY && calibParams.valid) {
                 // Ya está en READY, no necesita transición
             } else if (currentState == SLAVE_STATE_IDLE && calibParams.valid) {
@@ -110,7 +112,7 @@ void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) 
             }
             break;
 
-        case CMD_IDLE_TRANSITION:
+        case CMD_IDLE:
             if (currentState == SLAVE_STATE_READY) {
                 transitionTo(SLAVE_STATE_IDLE);
             }
@@ -124,7 +126,7 @@ void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) 
             transitionTo(SLAVE_STATE_EMERGENCY);
             break;
 
-        case CMD_MOTOR_DRIVE:
+        case CMD_DRIVE:
             // Solo permitimos movimiento si estamos sanos y calibrados
             if (currentState == SLAVE_STATE_READY && calibParams.valid) {                   
                 // Establecer referencia de velocidad (adimensional 0-1)
@@ -134,7 +136,7 @@ void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) 
             }
             break;
 
-        case CMD_INMEDIATE_STOP:
+        case CMD_STOP:
             motorController->setPWM(0, 90, true);  
             movingFlag = false;
             break;
@@ -193,7 +195,9 @@ void SlaveFSM::updateCalibration() {
         case MOVING:
             if (millis() - calibrationStepStart < 2000) {
                 if (calibrationIndex < 100) {
-                    calibrationMeasurements[calibrationIndex++] = sonar->sonarApproachRateRMT();
+                    SonarSensorData_t data;
+                    sonar->getLastSonarData(data);
+                    calibrationMeasurements[calibrationIndex++] = data.a_vel;
                     calibrationProgress = 10 + (calibrationIndex * 40 / 100);
                 }
             } else {

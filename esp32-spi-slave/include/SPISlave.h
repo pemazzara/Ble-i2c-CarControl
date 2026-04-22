@@ -5,7 +5,7 @@
 #include <driver/spi_slave.h> // ⚠️ Driver nativo de ESP-IDF
 #include "SPIDefinitions.h"
 #include "MotorControl.h"
-#include "SpeedController.h"
+#include "speed_controller.h"
 #include "sonar_integration.h"
 #include "freertos/semphr.h"
 

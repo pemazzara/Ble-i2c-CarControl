@@ -145,7 +145,7 @@ void UltraSonicMeasure::sonarUpdate() {
 
 
 
-bool UltraSonicMeasure::getLatestSonarData(SonarSensorData_t &data) {
+bool UltraSonicMeasure::getLastSonarData(SonarSensorData_t &data) {
     if (!initialized || !data_mutex) return false;
     
     bool success = false;

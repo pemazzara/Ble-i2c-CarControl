@@ -229,6 +229,7 @@ void sendStatusUpdate() {
     packet.progress = (base == SYSTEM_STATE_CALIBRATE) ? globalSensorData.calibrationProgress : 0;
 
     packet.distance = globalSensorData.sonarDistance;
+    packet.K_fixed = (uint16_t)(globalSensorData.a_vel); // Enviamos mm/s crudos
     //Serial.printf("Global distance : %d ", globalSensorData.sonarDistance);
     // Parámetros de calibración (punto fijo)
     packet.K_fixed = (uint16_t)(globalSensorData.calibrationK * 1000);

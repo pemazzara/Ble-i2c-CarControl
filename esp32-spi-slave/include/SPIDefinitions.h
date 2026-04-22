@@ -36,8 +36,9 @@ typedef enum : uint8_t {
     CMD_READY = 8,
     RESET_EMERGENCY = 9,
     RECONNECT = 10,
-    CMD_CALIBRATE = 11
-} ControlCommandType;
+    CMD_CALIBRATE = 11,
+    CMD_EMERGENCY = 12
+} ControlCommandType_t;
 
 typedef enum : uint8_t {
     JOYSTIC = 0,

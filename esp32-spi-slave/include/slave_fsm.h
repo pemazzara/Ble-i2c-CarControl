@@ -2,9 +2,10 @@
 #define SLAVE_FSM_H
 
 #include <Arduino.h>
-#include "spi_protocol.h"   // Para las constantes de estado (SLAVE_IDLE, etc.)
-#include "motor_controller.h"
+#include "SPIDefinitions.h"   // Para las constantes de estado (SLAVE_IDLE, etc.)
+#include "MotorControl.h"
 #include "speed_controller.h"
+#include "sonar_integration.h"
 
 #define CALIB_PWM 400
 #define DISTANCIA_CRITICA_STOP 150 // 15cm o 150mm - Detener inmediatamente
@@ -45,7 +46,7 @@ public:
      // Comandos desde el Master (llamar cuando se recibe un comando SPI)
     // Getters
     SlaveState_t getCurrentState() const;
-    //uint8_t getProgressOrFlags() const;
+    uint8_t getProgressOrFlags() const;
     uint8_t getProgress() const;          // 0-100 durante calibración
     uint8_t getStatusFlags() const;       // Bits de estado actuales
     CalibrationParams getCalibrationParams() const;

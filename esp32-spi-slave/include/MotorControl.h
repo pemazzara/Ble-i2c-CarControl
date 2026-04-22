@@ -112,7 +112,7 @@ private:
     
     // Funciones internas
     
-    void executeMovementCommand(ControlCommandType type, int16_t speed, 
+    void executeMovementCommand(ControlCommandType_t type, int16_t speed, 
                                          int16_t distance, int16_t angle);
     bool isSafetyTimeout(); 
     void setMotorSpeeds(int leftSpeed, int rightSpeed);
