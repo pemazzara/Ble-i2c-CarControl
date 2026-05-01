@@ -114,6 +114,7 @@ public:
     static const char* baseStateToString();
     static const char* readySubStateToString();
 
+    static void updateSyncTime(uint32_t syncTime);
     static void notifySyncSuccess();      // Se llama cada vez que un paquete SPI es válido
     static void checkHealth();            // Se llama en el loop o tarea de lógica
     static bool isCommActive();           // Consulta rápida de salud de red

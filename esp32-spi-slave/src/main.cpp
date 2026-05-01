@@ -23,7 +23,7 @@ UltraSonicMeasure sonar;
 SpeedController speedController;
 CalibrationParams calibParams;
 SPISlave spiSlave(motorController, sonar);
-SlaveFSM& slaveFSM = SlaveFSM::getInstance(); 
+SlaveFSM& fsm = SlaveFSM::getInstance(); 
 
 // =========================================================
 // Handles de tareas
@@ -32,8 +32,40 @@ TaskHandle_t spiTaskHandle = NULL;
 TaskHandle_t sonarTaskHandle = NULL;
 TaskHandle_t slaveFSMTaskHandle = NULL;
 
-QueueHandle_t xMasterCommandQueue;  // frames recibidos del Master
-QueueHandle_t xSlaveFeedbackQueue;   // frames a enviar al Master
+//QueueHandle_t xMasterCommandQueue;  // frames recibidos del Master
+//QueueHandle_t xSlaveFeedbackQueue;   // frames a enviar al Master
+// Comandos que la SPI envía a la FSM
+QueueHandle_t slaveCmdQueue;
+SlaveStates state;
+ResponseType response_type;   // TYPE_SENSORS o TYPE_SYSTEM
+    /*
+    // Datos de sistema
+    uint16_t K_fixed;
+    uint16_t tau_fixed;
+    uint8_t calibration_progress;
+    uint8_t calibration_valid;
+    // Datos de sensores (si la FSM los actualiza)
+    int16_t rpm_left; 
+    int16_t rpm_right;
+    uint16_t a_vel; 
+    uint16_t distance;
+    uint8_t motor_flags;
+*/
+SlaveState_t slaveState{
+    .state = SLAVE_STATE_IDLE, // Reflejar estado inicial en la estructura compartida 
+    .response_type = TYPE_SYSTEM, // Responderemos con datos de sistema inicialmente  
+    .K_fixed = 0,
+    .tau_fixed = 0,
+    .calibration_progress = 0,
+    .calibration_valid = 0, // No hay calibración al inicio
+    .rpm_left = 0,
+    .rpm_right = 0,
+    .a_vel = 0,
+    .distance = 0,
+    .motor_flags = 0
+};
+
+SemaphoreHandle_t state_mutex;
 
 // =========================================================
 // DECLARACIÓN DE TAREAS
@@ -45,11 +77,18 @@ void spiSlaveTask(void *pvParameters);
 void heapMonitorTask(void* pvParameters);
 void logSystemStatus();
 void printResetReason();
+void updateTelemetryData();
+void processFSMCommand(const ControlCommand_t& cmd);
+void evaluateEmergencyConditions();
 unsigned long lastMotorCheck = 0;
 SonarSensorData_t sonar_data;
 
 
 void setup_tasks() {
+    if (state_mutex == NULL || slaveCmdQueue == NULL) {
+        Serial.println("❌ Error creando mutex o cola");
+        while(1); // Detener ejecución
+    }
     Serial.println("🔧 Configurando tareas...");
         xTaskCreatePinnedToCore(
         slaveFSMTask,
@@ -136,17 +175,224 @@ void heapMonitorTask(void* pvParameters) {
     }
 }*/
 
-void slaveFSMTask(void *pvParameters) {
+void slaveFSMTask(void* pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50 Hz
 
+    
+    // Inicializar estructura compartida
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    slaveState.state = SLAVE_STATE_IDLE;
+    slaveState.response_type = TYPE_SYSTEM;
+    xSemaphoreGive(state_mutex);
+
+    ControlCommand_t cmd;
     while (1) {
+        // 1. Intentar recibir comando (sin bloqueo)
+        ControlCommand_t* cmdPtr = nullptr;
+        if (xQueueReceive(slaveCmdQueue, &cmd, 0) == pdTRUE) {
+            cmdPtr = &cmd;
+        }
+
+        // 2. Ejecutar UN solo update que lo hace todo
+        fsm.update(cmdPtr);
+
+        // 3. Sincronizar datos compartidos para la tarea SPI
+        xSemaphoreTake(state_mutex, portMAX_DELAY);
+        slaveState.state = fsm.getCurrentState();
+        slaveState.response_type = fsm.getPendingResponseType();
+        slaveState.motor_flags = fsm.getStatusFlags();
+        
+        // Datos del sonar (ya leídos en update)
+        slaveState.distance = fsm.getDistance();
+        slaveState.a_vel = fsm.getApproachVelocity();
+        
+        // Datos de motores
+        slaveState.rpm_left = motorController.getCurrentLeft();
+        slaveState.rpm_right = motorController.getCurrentRight();
+        
+        // Datos de calibración
+        calibParams = fsm.getCalibrationParams();
+        slaveState.K_fixed = calibParams.K;
+        slaveState.tau_fixed = calibParams.tau;       
+        slaveState.calibration_valid = calibParams.valid ? 1 : 0; // o
+        slaveState.calibration_progress = fsm.getProgress(); // si tienes un campo de progreso
+        xSemaphoreGive(state_mutex);
+
+        // 4. Esperar hasta el próximo ciclo exacto
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
-        SlaveFSM::getInstance().update();
-        esp_task_wdt_reset();  // si quieres que esta tarea también alimente el watchdog
     }
 }
 
+/*
+void evaluateEmergencyConditions(){
+    // Aquí puedes evaluar condiciones de emergencia basadas en sensores o estados
+    // Por ejemplo, si el sonar detecta un obstáculo muy cercano:
+     SonarSensorData_t data;
+     if(sonar->getLastSonarData(data)){
+        if (data.distance < DISTANCIA_CRITICA_STOP) {
+            fsm.transitionTo(SLAVE_STATE_EMERGENCY);
+        }
+     }
+}
+void processFSMCommand(const ControlCommand_t& cmd) {
+    switch (cmd.type) {
+        case CMD_DRIVE:
+            // Solo obedecer si la FSM está en un estado que permite movimiento
+            if (slaveState.state == SLAVE_STATE_READY || slaveState.state == SLAVE_STATE_CALIBRATION) {
+                // Aquí traduces el comando a PWM/Dirección para tus motores
+                motorController.handleSPICommand(cmd);
+                // Informamos al Master que estamos procesando movimiento
+                xSemaphoreTake(state_mutex, portMAX_DELAY);
+                slaveState.response_type = TYPE_MOTORS; 
+                xSemaphoreGive(state_mutex);
+            }
+            break;
+
+        case CMD_STOP:
+            //motorController.handleSPICommand(&cmd);
+            motorController.emergencyStop();
+            fsm.transitionTo(SLAVE_STATE_IDLE);
+            xSemaphoreTake(state_mutex, portMAX_DELAY);
+                slaveState.response_type = TYPE_MOTORS; 
+                slaveState.state = fsm.getCurrentState(); // reflejar cambio
+            xSemaphoreGive(state_mutex);
+            break;
+        case CMD_CALIBRATE:
+            if (slaveState.state == SLAVE_STATE_IDLE) {
+                fsm.transitionTo(SLAVE_STATE_CALIBRATION);
+                xSemaphoreTake(state_mutex, portMAX_DELAY);
+                slaveState.state = fsm.currentState; // para reflejar el cambio inmediatamente          
+                slaveState.response_type = TYPE_SYSTEM;
+                xSemaphoreGive(state_mutex);
+                // Iniciar calibración (activar bandera para otra tarea o hacerla aquí mismo)
+                startCalibrationProcedure();
+            }
+            break;
+        case CMD_READY:
+            if (slaveState.state == SLAVE_STATE_CALIBRATION && calibrationFinishedOK) {
+                fsm.transitionTo(SLAVE_STATE_READY);
+                xSemaphoreTake(state_mutex, portMAX_DELAY);
+                    slaveState.state = fsm.currentState; // reflejar cambio
+                    slaveState.response_type = TYPE_SYSTEM;
+                xSemaphoreGive(state_mutex);
+            }
+            break;
+        case CMD_EMERGENCY:
+            fsm.transitionTo(SLAVE_STATE_EMERGENCY);
+            xSemaphoreTake(state_mutex, portMAX_DELAY);
+            slaveState.state = fsm.currentState; // reflejar cambio
+            slaveState.response_type = TYPE_SYSTEM;
+            xSemaphoreGive(state_mutex);
+            break;
+        case CMD_RESET_EMERGENCY:
+            if (slaveState.state == SLAVE_STATE_EMERGENCY && checkSafeConditions()) {
+                fsm.transitionTo(SLAVE_STATE_IDLE);
+                xSemaphoreTake(state_mutex, portMAX_DELAY);
+                slaveState.state = fsm.getCurrentState(); // reflejar cambio
+                slaveState.state = fsm.currentState; // reflejar cambio 
+                slaveState.response_type = TYPE_SYSTEM;
+                xSemaphoreGive(state_mutex);    
+            }
+            break;
+        case CMD_READ_SENSORS:
+            // No cambia estado, pero queremos que la siguiente respuesta sea TYPE_SENSORS
+            xSemaphoreTake(state_mutex, portMAX_DELAY);
+            slaveState.response_type = TYPE_SENSORS;
+            // (La actualización de los datos de sensores se hará en el ciclo periódico de la FSM)
+            xSemaphoreGive(state_mutex);
+            break;
+        case CMD_GET_SYSTEM:
+            xSemaphoreTake(state_mutex, portMAX_DELAY);
+                slaveState.response_type = TYPE_SYSTEM;
+            xSemaphoreGive(state_mutex);
+            break;
+        // ... otros comandos
+        default:
+            break;
+    }
+}
+
+void updateTelemetryData() {
+    // 1. Actualizar el sensor físicamente
+    sonar.sonarUpdate();
+    
+    SonarSensorData_t sData;
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    
+    // 2. Extraer datos del Sonar
+    if (sonar.getLastSonarData(sData)) {
+        slaveState.distance = sData.distance;
+        slaveState.a_vel = sData.a_vel;
+    // 3. Llenar la estructura que se enviará por SPI
+    // Dependiendo de response_type, llenamos un payload u otro
+    if (slaveState.response_type == TYPE_SENSORS) {
+        slaveState.payload.sensors.distance = sData.distance;
+        slaveState.payload.sensors.status = sData.status;
+    } else if (slaveState.response_type == TYPE_MOTORS) {
+        slaveState.payload.motors.rpm_left = motorController.getCurrentLeft();
+        slaveState.payload.motors.rpm_right = motorController.getCurrentRight();
+        slaveState.payload.motors.motor_flags = motorController.getStatusFlags();
+    }
+    } else {
+        // Si no se pudieron obtener datos del sonar, marcar un error o poner valores por defecto
+        slaveState.distance = 0xFFFF; // valor de error
+        slaveState.a_vel = 0;
+        slaveState.motor_flags |= 0x80; // bit de error en sensores
+    }  
+    // 4. Siempre actualizar el estado general
+    slaveState.last_state = fsm.getCurrentState();
+    // Obtener flags base del controlador de motores
+    uint8_t currentFlags = motorController.getFlags();        
+    // Si el sonar detecta emergencia interna, la FSM debe reaccionar
+    if (sData.emergency && currentState != SLAVE_STATE_EMERGENCY) {
+        // Nota: Aquí lo ideal es llamar a transitionTo fuera del mutex 
+        // o diseñar transitionTo para que no cause deadlock.
+        slaveState.motor_flags |= 0x01; // Marcamos flag de obstáculo
+    } else {
+        slaveState.motor_flags &= ~0x01; // Limpiamos flag de obstáculo
+    }
+    if (!sonarOk) {
+    currentFlags |= 0x80; // Bit de error de hardware
+    }
+    slaveState.motor_flags = currentFlags;
+ 
+    // 4. Actualizar estado de calibración si corresponde
+    if (currentState == SLAVE_STATE_CALIBRATION) {
+        slaveState.calibration_progress = calibrationManager.getProgress();
+    }
+
+    xSemaphoreGive(state_mutex);
+}
+
+void updateTelemetryData() {
+    sonar.sonarUpdate();
+    SonarSensorData_t data;
+    if (sonar.getLastSonarData(data)) {
+        // Procesar datos del sonar
+        slaveState.distance = data.distance;
+        slaveState.a_vel = data.a_vel;   
+    
+    // 2. Llenar la estructura que se enviará por SPI
+    // Dependiendo de response_type, llenamos un payload u otro
+    if (slaveState.response_type == TYPE_SENSORS) {
+        slaveState.payload.sensors.distance = data.distance;
+        slaveState.payload.sensors.status = data.status;
+    } else if (slaveState.response_type == TYPE_MOTORS) {
+        slaveState.payload.motors.rpm_left = motorController.getCurrentLeft();
+        slaveState.payload.motors.rpm_right = motorController.getCurrentRight();
+        slaveState.payload.motors.motor_flags = motorController.getStatusFlags();
+    }
+    } else {
+        // Si no se pudieron obtener datos del sonar, marcar un error o poner valores por defecto
+        slaveState.distance = 0xFFFF; // valor de error
+        slaveState.a_vel = 0;
+        slaveState.motor_flags |= 0x80; // bit de error en sensores
+    }  
+    // 3. Siempre actualizar el estado general
+    slaveState.state = fsm.getCurrentState();
+}
+*/
 void sonarTask(void* pvParameters) {
     UBaseType_t stack_start = uxTaskGetStackHighWaterMark(NULL);
     Serial.printf("[SonarTask] Stack inicial libre: %d palabras\n", stack_start);
@@ -194,8 +440,17 @@ void sonarTask(void* pvParameters) {
             }
     
         }
-        
-        //vTaskDelay(pdMS_TO_TICKS(10));        
+        /* 3. Actualizar datos compartidos para la tarea SPI
+            SonarSensorData_t s_data;
+            if (sonar.getLastSonarData(s_data)) {
+                // Aquí podrías actualizar una estructura compartida o enviar por cola
+                // para que la tarea SPI la incluya en su respuesta.
+                // Por ejemplo, podrías usar un mutex para proteger acceso a una variable global:
+                xSemaphoreTake(state_mutex, portMAX_DELAY);
+                slaveState.distance = s_data.distance;
+                slaveState.a_vel = s_data.a_vel;
+                xSemaphoreGive(state_mutex);
+            }*/       
         // 3. Pausa optimizada, Frecuencia del sonar: ≈ 50 Hz (período 20 ms).
         vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
     }
@@ -256,33 +511,43 @@ void motorTask(void *pv) {
     uint32_t last_valid_command_ms = millis();
 
 
-    SlaveFSM& fsm = SlaveFSM::getInstance();
-
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50Hz
     while (1) {
         esp_task_wdt_reset();
         uint32_t now = millis();
+        // 1. Leer estado del sistema (con mutex)
+        xSemaphoreTake(state_mutex, portMAX_DELAY);
+            state = fsm.getCurrentState();
+        xSemaphoreGive(state_mutex);
 
-        // 1. RECEPCIÓN SPI: Solo actualiza datos, no decide acciones.
+        // 2. Si estamos en CALIBRATION o EMERGENCY, aseguramos parada y esperamos
+        if (state == SLAVE_STATE_CALIBRATION || state == SLAVE_STATE_EMERGENCY) {
+            // Cruzar de brazos: no hacemos nada, la FSM tiene el control total.
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        // 3. RECEPCIÓN SPI: Solo actualiza datos, no decide acciones.
         if (SPISlave::isCommandReady()) {
             ControlCommand_t cmd = SPISlave::getLastCommand();
             speedController.setTargetFromMaster(cmd);
             last_valid_command_ms = now;
         }
+
+        // 3. WATCHDOG SPI: Si el Master muere, avisamos a la FSM.
         
-        // 2. WATCHDOG SPI: Si el Master muere, avisamos a la FSM.
-        if (now - last_valid_command_ms > 500) {
+        if ((now - last_valid_command_ms > 500) && (state != SLAVE_STATE_CALIBRATION)) {
             // En lugar de frenar aquí, forzamos a la FSM a salir de READY
-            fsm.setEmergencyFlag(); 
+            fsm.setEmergencyFlag();
         }
 
-        // 3. SEGURIDAD HARDWARE (Interlock): 
+        // 4. SEGURIDAD HARDWARE (Interlock): 
         // Si la FSM no está en READY, aseguramos el estado de parada aquí 
-        // como última línea de defensa.
-        if (fsm.getCurrentState() != SLAVE_STATE_READY) {
+        //como última línea de defensa.
+        if ((fsm.getCurrentState() != SLAVE_STATE_READY) && (state != SLAVE_STATE_CALIBRATION)) {
             motorController.setPWM(0, 90, true);
-        }
+        } 
 
         vTaskDelay(pdMS_TO_TICKS(10)); // Más rápida que la FSM para reaccionar antes
     }
@@ -393,6 +658,8 @@ void logSystemStatus() {
 void setup() {
     Serial.begin(115200);
     delay(2000); // Esperar para estabilidad
+    slaveCmdQueue = xQueueCreate(10, sizeof(ControlCommand_t)); // Cola para comandos de la SPI a la FSM
+    state_mutex = xSemaphoreCreateMutex();
     printResetReason();
     Serial.println("\n=== ESP32 SLAVE - CON WATCHDOG ===\n");
     // 1. Configurar watchdog para todo el sistema
@@ -415,11 +682,11 @@ void setup() {
     
     motorController.begin();
     speedController.begin();
-    SlaveFSM& slave_fsm = SlaveFSM::getInstance();
-    slave_fsm.begin();
-    slave_fsm.setMotorController(&motorController);
-    slave_fsm.setSonar(&sonar);
-    slave_fsm.setSpeedController(&speedController);  
+    auto& fsm = SlaveFSM::getInstance();
+    fsm.setMotorController(&motorController);
+    fsm.setSonar(&sonar);
+    fsm.setSpeedController(&speedController);
+    fsm.begin(); // Inicializa el mutex y estado inicial  
     // Inicializar SPI (usa referencias del constructor)
 
     //spiSlave.checkHealth();

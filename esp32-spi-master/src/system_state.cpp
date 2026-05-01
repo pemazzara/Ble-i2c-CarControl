@@ -2,9 +2,9 @@
 #include "system_state.h"
 
 // Inicialización de miembros estáticos
-SystemBaseState_t SystemState::currentBaseState = SYSTEM_STATE_BOOT;
+SystemBaseState_t SystemState::currentBaseState = SYSTEM_STATE_READY;
 ReadySubState_t SystemState::currentReadySubState = READY_SUBSTATE_IDLE;
-SystemBaseState_t SystemState::previousBaseState = SYSTEM_STATE_BOOT;
+SystemBaseState_t SystemState::previousBaseState = SYSTEM_STATE_READY;
 ReadySubState_t SystemState::previousReadySubState = READY_SUBSTATE_IDLE;
 
 static uint16_t syncSuccessCount;
@@ -20,6 +20,8 @@ StateCallback SystemState::onEnterCalibrate = nullptr;
 StateCallback SystemState::onExitCalibrate = nullptr;
 
 void SystemState::begin() {
+    currentBaseState = SYSTEM_STATE_READY;
+    currentReadySubState = READY_SUBSTATE_IDLE;
     if (stateMutex == NULL) {
         stateMutex = xSemaphoreCreateMutex();
     }
@@ -138,7 +140,9 @@ void SystemState::notifySyncSuccess() {
         syncSuccessCount++;
     }
 }
-
+void SystemState::updateSyncTime(uint32_t syncTime){
+    lastSyncTime = syncTime;
+}
 void SystemState::checkHealth() {
     uint32_t now = millis();
     SystemBaseState_t current = getBaseState();

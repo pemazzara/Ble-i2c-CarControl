@@ -126,7 +126,9 @@ void UltraSonicMeasure::sonarUpdate() {
         // Actualizar estructura con mutex
     // Actualizar estructura con mutex
     if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        sonar_data.a_vel = approachRate;
+        // Escalar el valor adimensional por 1000 o 10000 para enviarlo como entero
+        sonar_data.a_vel = (int16_t)(approachRate * 1000.0f);
+        //sonar_data.a_vel = approachRate;
         sonar_data.distance = filteredDistance;  // usar distancia filtrada
         sonar_data.sensor_ok = (filteredDistance >= 200 && filteredDistance <= 4000);
         if (filteredDistance > 0 && filteredDistance < 200) {

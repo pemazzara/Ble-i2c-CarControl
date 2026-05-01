@@ -348,7 +348,7 @@ void MotorControl::setSpeed(int speedA, int speedB) {
 void MotorControl::handleSPICommand(const ControlCommand_t* cmd) {
     if (!cmd) return;
     // 1. Validar el tipo de comando (Si es basura, ignorar)
-    if (cmd->type != CMD_STOP && cmd->type != CMD_DRIVE && cmd->type != CMD_STATUS && cmd->type != CMD_READ_SENSORS) {
+    if (cmd->type != CMD_STOP && cmd->type != CMD_DRIVE && cmd->type != CMD_GET_STATUS && cmd->type != CMD_READ_SENSORS) {
         return; 
     }
     // Actualizar el timestamp del último comando recibido

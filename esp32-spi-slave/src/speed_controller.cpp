@@ -112,24 +112,3 @@ void SpeedController::updateControl() {
     }
 
 
-/* Rutina de calibración
-void calibratePWMtoAvel() {
-    for(int pwm = 100; pwm <= 1023; pwm += 50) {
-        motorController.setDrive(pwm, 90, false); // Adelante
-        
-        delay(2000); // Esperar a estabilizar
-        
-        // Medir avel (promedio de varias lecturas)
-        float avel_sum = 0;
-        for(int i=0; i<10; i++) {
-            avel_sum += sonar.sonarApproachRateRMT(); // tu función que calcula Δtiempo/Δt
-            delay(100);
-        }
-        float avel = avel_sum / 10;
-        
-        Serial.printf("PWM: %d → avel: %.3f\n", pwm, avel);
-        
-        // Guardar en tabla (EEPROM o constante)
-        pwm_to_avel_table[pwm/50] = avel;
-    }
-}*/

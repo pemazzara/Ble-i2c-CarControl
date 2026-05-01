@@ -9,35 +9,37 @@
 #define SPI_MAGIC_MASTER 0xA5
 #define SPI_MAGIC_SLAVE  0x5A
 
-// --- ENUMS ---
-/*Android definitions
+/*Android definitions 
     CMD_STOP(0x00),     // Parada de emergencia
     CMD_DRIVE(0x01),              // Movimiento con velocidad+ángulo
     CMD_HEARTBEAT(0x02),
     CMD_READ_SENSORS(0x03),      // Leer sensores
-    CMD_MOVE_DISTANCE(0x04),
-    CMD_SET_MODE(0x05),          // Cambiar modo de operación
-    CMD_STATUS(0x06),
+    CMD_GET_SYSTEM(0x04),
+    CMD_SET_MODE(0x05),          // Cambiar modo de operación: MANUAL AUTOMATIC
+    CMD_GET_STATUS(0x06),
     CMD_IDLE(0x07),
     CMD_READY(0x08),
     RESET_EMERGENCY(0x09),
     RECONNECT(0x0A),
-    CMD_CALIBRATE(0x0B);
-    */     
+    CMD_CALIBRATE(0x0B);         // Modo calibración
+*/
+
+
 typedef enum : uint8_t {
-    CMD_STOP = 0,
-    CMD_DRIVE = 1,
-    CMD_HEARTBEAT = 2,
-    CMD_READ_SENSORS = 3,
-    CMD_MOVE_DISTANCE = 4,
-    CMD_SET_MODE = 5,
-    CMD_STATUS = 6,
-    CMD_IDLE = 7,
-    CMD_READY = 8,
-    RESET_EMERGENCY = 9,
-    RECONNECT = 10,
-    CMD_CALIBRATE = 11
-} ControlCommandType;
+    CMD_STOP = 0x00,
+    CMD_DRIVE = 0x01,
+    CMD_HEARTBEAT = 0x02,
+    CMD_READ_SENSORS = 0x03,
+    CMD_GET_SYSTEM = 0x04,
+    CMD_SET_MODE = 0x05,
+    CMD_GET_STATUS = 0x06,
+    CMD_IDLE = 0x07,
+    CMD_READY = 0x08,
+    CMD_RESET_EMERGENCY = 0x09,
+    CMD_RECONNECT = 0x0A,
+    CMD_CALIBRATE = 0x0B,
+    CMD_SET_EMERGENCY = 0x0C
+} ControlCommandType_t;
 
 typedef enum : uint8_t {
     JOYSTIC = 0,

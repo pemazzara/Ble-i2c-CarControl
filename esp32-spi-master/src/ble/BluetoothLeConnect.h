@@ -7,9 +7,9 @@
 
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t msg_id;      // Offset 0
-    uint8_t baseState;   // Offset 1
-    uint8_t subState;    // Offset 2
+    uint8_t msg_id;      // Offset 0 // 0x81
+    uint8_t baseState;   // Offset 1 // SystemBaseState_t (BOOT, READY, EMERGENCY, ERROR...)
+    uint8_t subState;    // Offset 2 // ReadySubState_t (IDLE, MANUAL, AUTO)
     uint8_t alerts;      // Offset 3
     uint8_t progress;    // Offset 4
     uint16_t distance;   // Offset 5 (¡Sin padding gracias al pack!)

@@ -15,30 +15,32 @@
     CMD_DRIVE(0x01),              // Movimiento con velocidad+ángulo
     CMD_HEARTBEAT(0x02),
     CMD_READ_SENSORS(0x03),      // Leer sensores
-    CMD_MOVE_DISTANCE(0x04),
-    CMD_SET_MODE(0x05),          // Cambiar modo de operación
-    CMD_STATUS(0x06),
+    CMD_GET_SYSTEM(0x04),
+    CMD_SET_MODE(0x05),          // Cambiar modo de operación: MANUAL AUTOMATIC
+    CMD_GET_STATUS(0x06),
     CMD_IDLE(0x07),
     CMD_READY(0x08),
     RESET_EMERGENCY(0x09),
     RECONNECT(0x0A),
-    CMD_CALIBRATE(0x0B);
-    */     
+    CMD_CALIBRATE(0x0B);         // Modo calibración
+    */ 
+    
 typedef enum : uint8_t {
     CMD_STOP = 0,
     CMD_DRIVE = 1,
     CMD_HEARTBEAT = 2,
     CMD_READ_SENSORS = 3,
-    CMD_MOVE_DISTANCE = 4,
+    CMD_GET_SYSTEM = 4,
     CMD_SET_MODE = 5,
-    CMD_STATUS = 6,
+    CMD_GET_STATUS = 6,
     CMD_IDLE = 7,
     CMD_READY = 8,
-    RESET_EMERGENCY = 9,
-    RECONNECT = 10,
+    CMD_RESET_EMERGENCY = 9,
+    CMD_RECONNECT = 10,
     CMD_CALIBRATE = 11,
-    CMD_EMERGENCY = 12
+    CMD_SET_EMERGENCY = 12
 } ControlCommandType_t;
+
 
 typedef enum : uint8_t {
     JOYSTIC = 0,
@@ -92,7 +94,7 @@ typedef struct {
             uint16_t a_vel; // Bytes 8-9 (Velocidad de acercamiento, calculada por el Slave)
             uint16_t distance;    // Bytes 10-11 (Distancia del sonar)
             uint8_t  motor_flags; // Byte 12 (Bits de error: Overcurrent, Stall, etc)
-            uint8_t reserved;   // Byte 13
+            uint8_t state;   // Byte 13
         } motors;
 
         struct {

@@ -33,20 +33,22 @@ private:
     static SPIResponseFrame_t* spi_tx_buffer; 
     static SPIFrame_t* spi_rx_buffer;
         // Sincronización entre tasks
-    static SemaphoreHandle_t response_mutex;
-    static SemaphoreHandle_t cmd_mutex;
+    //static SemaphoreHandle_t response_mutex;
+    // static SemaphoreHandle_t cmd_mutex;
     static SemaphoreHandle_t cmd_ready_sem;
     static SemaphoreHandle_t buffer_mutex;
 
     
      // Variables de estado
     static ControlCommand_t last_command;
+    ResponseType pending_response_type;
+    uint8_t last_rx_msg_id;
     
     //static SpeedController* speedCtrl;
     static SPIResponseFrame_t last_response;
     // Pone los datos en el buffer DMA y le dice al hardware "Listos para recibir"
     void queueNextTransaction();
-    void processReceivedCommand(const SPIFrame_t& rxFrame);
+    //void processReceivedCommand(const SPIFrame_t& rxFrame);
     void prepareResponse(SPIResponseFrame_t &txFrame);
     uint8_t getNextMsgId();
 

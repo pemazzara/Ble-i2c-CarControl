@@ -9,13 +9,28 @@
 
 #define CALIB_PWM 400
 #define DISTANCIA_CRITICA_STOP 150 // 15cm o 150mm - Detener inmediatamente
-
+#define DISTANCIA_SEGURA_RESET 300 // 30cm o 300mm - Condición para resetear emergencia
 // Estados del Slave
-typedef enum {
+typedef enum : uint8_t {
     SLAVE_STATE_IDLE = 0,
     SLAVE_STATE_CALIBRATION,
     SLAVE_STATE_READY,
     SLAVE_STATE_EMERGENCY
+} SlaveStates;
+
+// Estado compartido (protegido por mutex)
+typedef struct {
+    SlaveStates state;
+    ResponseType response_type;   // TYPE_SENSORS o TYPE_SYSTEM
+    // Datos de sistema
+    uint16_t K_fixed;
+    uint16_t tau_fixed;
+    uint8_t calibration_progress;
+    uint8_t calibration_valid;
+    // Datos de sensores (si la FSM los actualiza)
+    int16_t rpm_left, rpm_right;
+    uint16_t a_vel, distance;
+    uint8_t motor_flags;
 } SlaveState_t;
 
 // Estructura para parámetros de calibración
@@ -34,7 +49,7 @@ public:
     void begin();
 
     // Actualización periódica (llamar cada 20-50ms)
-    void update();
+    void update(const ControlCommand_t* cmd);
     void saveCalibrationToEEPROM();
     // Setters
     void setEmergencyFlag();
@@ -45,7 +60,8 @@ public:
     
      // Comandos desde el Master (llamar cuando se recibe un comando SPI)
     // Getters
-    SlaveState_t getCurrentState() const;
+    SlaveStates getCurrentState() const;
+    ResponseType getPendingResponseType() const; 
     uint8_t getProgressOrFlags() const;
     uint8_t getProgress() const;          // 0-100 durante calibración
     uint8_t getStatusFlags() const;       // Bits de estado actuales
@@ -53,6 +69,7 @@ public:
     void loadCalibrationFromEEPROM();
     // Getters para valores específicos (usados por prepareResponse)
     uint16_t getDistance() const;
+    uint16_t getApproachVelocity() const;
     bool isEmergency() const;
     bool isMoving() const;
     uint8_t statusFlags;
@@ -73,12 +90,18 @@ private:
     SlaveFSM(const SlaveFSM&) = delete;
     SlaveFSM& operator=(const SlaveFSM&) = delete;
 
+    enum CalStep { MOVING, ANALYZING, DONE };
+    CalStep calStep;
+    unsigned long calStepStart;
+    int calIndex;
+    float calMeasurements[100];
+
     MotorControl* motorController;
     UltraSonicMeasure* sonar;
-    SpeedController speedController; // Controlador de velocidad para la referencia de velocidad
+    SpeedController* speedController; // En lugar de objeto directo // Controlador de velocidad para la referencia de velocidad
 
     // Transición de estado (con callbacks opcionales)
-    void transitionTo(SlaveState_t newState);
+    void transitionTo(SlaveStates newState);
 
     // Callbacks de entrada/salida de estados
     void onEnterIdle();
@@ -95,8 +118,8 @@ private:
     
 
     // Variables de estado
-    SlaveState_t currentState;
-    SlaveState_t previousState;
+    SlaveStates currentState;
+    SlaveStates previousState;
     uint32_t stateStartTime;
 
     // Calibración
@@ -110,6 +133,7 @@ private:
 
     // Datos de sensores (pueden venir de otra clase)
     uint16_t lastDistance;
+    uint16_t  approachVelocity;
     bool emergencyFlag;
     bool errorFlag;
     bool movingFlag;

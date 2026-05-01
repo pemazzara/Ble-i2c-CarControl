@@ -6,6 +6,9 @@
 #include "SPIDefinitions.h"       // Para las estructuras de datos de comunicación
 
 SonarSensorData_t data;
+ResponseType pendingResponse;
+
+
 
 void SlaveFSM::onExitIdle() {}
 void SlaveFSM::onExitReady() {
@@ -29,10 +32,9 @@ SlaveFSM& SlaveFSM::getInstance() {
     
 void SlaveFSM::begin() {
     fsmMutex = xSemaphoreCreateMutex();
-    //currentState = SLAVE_STATE_IDLE;
-    //previousState = SLAVE_STATE_IDLE;
-    currentState = SLAVE_STATE_READY;
-    previousState = SLAVE_STATE_READY;
+    currentState = SLAVE_STATE_IDLE;
+    previousState = SLAVE_STATE_IDLE;
+
     stateStartTime = millis();
     calibrationRunning = false;
     calibParams.valid = false;
@@ -47,9 +49,121 @@ void SlaveFSM::begin() {
     } else {
     Serial.println("Sin calibración válida, se requerirá calibración");
     }
-    Serial.println("🔧 SlaveFSM inicializada en IDLE");
+    Serial.println("🔧 SlaveFSM inicializada en READY");
 }
+void SlaveFSM::update(const ControlCommand_t* cmd) {
+    if (xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
 
+    // ──────────────────────────────────────────────
+    // 1. LECTURA DE SENSORES (una sola vez por ciclo)
+    // ──────────────────────────────────────────────
+    SonarSensorData_t sonarData;
+    bool sonarValid = sonar->getLastSonarData(sonarData);
+    
+    if (sonarValid) {
+        lastDistance = sonarData.distance;
+        approachVelocity = sonarData.a_vel;
+        emergencyFlag = sonarData.emergency;
+        movingFlag = abs(sonarData.a_vel) > 0.001f;
+        errorFlag = !sonarData.sensor_ok;
+    }
+
+    // ──────────────────────────────────────────────
+    // 2. PROCESAR COMANDO RECIBIDO (si existe)
+    // ──────────────────────────────────────────────
+    if (cmd != nullptr) {
+        switch (cmd->type) {
+            case CMD_DRIVE:
+                if (currentState == SLAVE_STATE_READY) {
+                    motorController->handleSPICommand(cmd);
+                    pendingResponse = TYPE_SENSORS;  // Responderemos con telemetría
+                }
+                break;
+
+            case CMD_STOP:
+                motorController->handleSPICommand(cmd);
+                //transitionTo(SLAVE_STATE_IDLE);
+                pendingResponse = TYPE_SENSORS;
+                break;
+
+            case CMD_CALIBRATE:
+                if (currentState != SLAVE_STATE_EMERGENCY) {
+                    transitionTo(SLAVE_STATE_CALIBRATION);
+                }
+                pendingResponse = TYPE_SYSTEM;  // Informar progreso de calibración
+                break;
+
+            case CMD_READ_SENSORS:
+                pendingResponse = TYPE_SENSORS;
+                break;
+
+            case CMD_GET_SYSTEM:
+                pendingResponse = TYPE_SYSTEM;
+                break;
+
+            case CMD_RESET_EMERGENCY:
+                if (currentState == SLAVE_STATE_EMERGENCY && 
+                    lastDistance > DISTANCIA_SEGURA_RESET) {
+                    transitionTo(SLAVE_STATE_IDLE);
+                }
+                pendingResponse = TYPE_SYSTEM;
+                break;
+
+            case CMD_SET_EMERGENCY:
+                transitionTo(SLAVE_STATE_EMERGENCY);
+                pendingResponse = TYPE_SYSTEM;
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // 3. TRANSICIONES AUTOMÁTICAS (Seguridad)
+    // ──────────────────────────────────────────────
+    if (emergencyFlag && currentState != SLAVE_STATE_EMERGENCY) {
+        transitionTo(SLAVE_STATE_EMERGENCY);
+        motorController->emergencyStop();
+    }
+
+    // ──────────────────────────────────────────────
+    // 4. ACCIONES PERIÓDICAS POR ESTADO
+    // ──────────────────────────────────────────────
+    switch (currentState) {
+        case SLAVE_STATE_IDLE:
+            motorController->stop();  // Asegurar inmovilidad
+            break;
+
+        case SLAVE_STATE_CALIBRATION:
+            updateCalibration();
+            break;
+
+        case SLAVE_STATE_READY:
+            speedController->updateControl();
+            if (lastDistance < DISTANCIA_CRITICA_STOP) {
+                transitionTo(SLAVE_STATE_EMERGENCY);
+                motorController->emergencyStop();
+            }
+            break;
+
+        case SLAVE_STATE_EMERGENCY:
+            motorController->emergencyStop();
+            break;
+    }
+
+    // ──────────────────────────────────────────────
+    // 5. CONSTRUIR FLAGS DE ESTADO
+    // ──────────────────────────────────────────────
+    statusFlags = motorController->getMotorStatus();
+    if (emergencyFlag)                          statusFlags |= 0x01;
+    if (movingFlag)                             statusFlags |= 0x02;
+    if (currentState == SLAVE_STATE_CALIBRATION) statusFlags |= 0x04;
+    if (errorFlag)                              statusFlags |= 0x08;
+
+    xSemaphoreGive(fsmMutex);
+}
+/*
 void SlaveFSM::update() {
     if (xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10)) != pdTRUE) return; 
     statusFlags = motorController->getMotorStatus();
@@ -58,8 +172,8 @@ void SlaveFSM::update() {
     if (movingFlag)    statusFlags |= 0x02;
     if (safetyTimeout) statusFlags |= 0x04;  // definido externamente
     if(errorFlag)      statusFlags |= 0x08;     // definido externamente
-
-    // Máquina de estados
+    
+       // ACCIONES PERIÓDICAS POR ESTADO
     switch (currentState) {
         case SLAVE_STATE_IDLE:
             // No hacer nada, esperar comandos
@@ -78,7 +192,7 @@ void SlaveFSM::update() {
                 errorFlag = !data.sensor_ok;
             }; // Actualizar datos del sonar
             statusFlags = motorController->getMotorStatus();
-            speedController.updateControl();
+            speedController->updateControl();
             // En READY, solo monitorear emergencias
             if (lastDistance < DISTANCIA_CRITICA_STOP) {
                 transitionTo(SLAVE_STATE_EMERGENCY);
@@ -93,7 +207,7 @@ void SlaveFSM::update() {
 
     xSemaphoreGive(fsmMutex);
 }
-
+*/
 void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) {
     if (xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
 
@@ -117,21 +231,24 @@ void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) 
                 transitionTo(SLAVE_STATE_IDLE);
             }
             break;
-
-        case CMD_EMERGENCY:
+        case CMD_SET_EMERGENCY:
             // 1. Hardware primero: Frenar en seco
             motorController->setPWM(0, 90, true); 
             movingFlag = false;
             // 2. Lógica después: Cambiar estado
             transitionTo(SLAVE_STATE_EMERGENCY);
             break;
-
+        case CMD_RESET_EMERGENCY:
+            if (!(motorController->getStatusFlags() && 0x01)){ // Si no hay emergencia activa
+                transitionTo(SLAVE_STATE_READY);
+            }
+            break;
         case CMD_DRIVE:
             // Solo permitimos movimiento si estamos sanos y calibrados
             if (currentState == SLAVE_STATE_READY && calibParams.valid) {                   
                 // Establecer referencia de velocidad (adimensional 0-1)
                 float targetAvel = speed / 1023.0f;
-                speedController.setTarget(targetAvel, angle);
+                speedController->setTarget(targetAvel, angle);
                 movingFlag = (speed != 0);
             }
             break;
@@ -140,14 +257,26 @@ void SlaveFSM::handleCommand(uint8_t commandType, int16_t speed, int16_t angle) 
             motorController->setPWM(0, 90, true);  
             movingFlag = false;
             break;
+        case CMD_READ_SENSORS:
+
+            break;
     }
 
     xSemaphoreGive(fsmMutex);
 }
 
-void SlaveFSM::transitionTo(SlaveState_t newState) {
+void SlaveFSM::transitionTo(SlaveStates newState) {
     if (currentState == newState) return;
-
+    if (newState == SLAVE_STATE_CALIBRATION) {
+        calStep = MOVING;               // empezar desde el principio
+        calStepStart = millis();        // ¡importante!
+        calIndex = 0;
+        calibrationProgress = 0;        // progreso inicial
+        // Opcional: limpiar mediciones anteriores
+        memset(calMeasurements, 0, sizeof(calMeasurements));
+    }
+    previousState = currentState;
+    currentState = newState;
     // Llamar callbacks de salida del estado actual
     switch (currentState) {
         case SLAVE_STATE_IDLE:       onExitIdle(); break;
@@ -188,9 +317,50 @@ void SlaveFSM::onEnterCalibration() {
     Serial.println("Slave: Iniciando CALIBRACIÓN");
 }
 
+
+void SlaveFSM::updateCalibration() {
+    switch (calStep) {
+        case MOVING:
+            //motorController->setPWM(CALIB_PWM, 90, true); // ya está en onEnterCalibration
+            // Esperar 2 segundos mientras se mueve el motor
+            if (millis() - calStepStart < 2000) {
+                if (calIndex < 100) {
+                    SonarSensorData_t data;
+                    if (sonar->getLastSonarData(data)) {  // verificar que haya dato
+                        calMeasurements[calIndex++] = data.a_vel;
+                        // progreso: 10% base + hasta 40% por recolección
+                        calibrationProgress = 10 + (calIndex * 40 / 100);
+                    }
+                }
+            } else {
+                // Termina fase de movimiento
+                motorController->emergencyStop();
+                calStep = ANALYZING;
+                calStepStart = millis();
+                calibrationProgress = 50;  // punto medio
+            }
+            break;
+
+        case ANALYZING:
+            if (millis() - calStepStart > 500) {
+                calculateCalibrationParams(); // usa calMeasurements y calIndex
+                calStep = DONE;
+                calStepStart = millis();
+                calibrationProgress = 90;
+            }
+            break;
+
+        case DONE:
+            if (millis() - calStepStart > 1000) {
+                transitionTo(SLAVE_STATE_READY);
+                // No hace falta resetear aquí, se hará en la próxima entrada a CALIBRATION
+            }
+            break;
+    }
+}
+/*
 void SlaveFSM::updateCalibration() {
     static enum { MOVING, ANALYZING, DONE } step = MOVING;
-
     switch (step) {
         case MOVING:
             if (millis() - calibrationStepStart < 2000) {
@@ -224,7 +394,7 @@ void SlaveFSM::updateCalibration() {
             break;
     }
 }
-
+*/
 void SlaveFSM::calculateCalibrationParams() {
     // Calcular K y τ a partir de las mediciones
     float avel_final = calibrationMeasurements[99];
@@ -274,12 +444,12 @@ void SlaveFSM::setSonar(UltraSonicMeasure* sonar) {
     this->sonar = sonar;
 }
 void SlaveFSM::setSpeedController(SpeedController* speedCtrl) {
-    this->speedController = *speedCtrl;
+    this->speedController = speedCtrl;
 }
 
 // Getters (thread-safe)
-SlaveState_t SlaveFSM::getCurrentState() const {
-    SlaveState_t state;
+SlaveStates SlaveFSM::getCurrentState() const {
+    SlaveStates state;
     if (xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         state = currentState;
         xSemaphoreGive(fsmMutex);
@@ -288,7 +458,9 @@ SlaveState_t SlaveFSM::getCurrentState() const {
     }
     return state;
 }
-
+ResponseType  SlaveFSM::getPendingResponseType() const {
+    return pendingResponse;
+}
 
 uint8_t SlaveFSM::getProgressOrFlags() const {
     // Si estamos en medio de una calibración, devolvemos el %
@@ -350,7 +522,16 @@ CalibrationParams SlaveFSM::getCalibrationParams() const {
 }
 
 uint16_t SlaveFSM::getDistance() const {
-    return lastDistance;  // Asumiendo que lastDistance se actualiza en update()
+    xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10));
+     uint16_t dist = lastDistance;
+    xSemaphoreGive(fsmMutex);
+    return dist;  // Asumiendo que lastDistance se actualiza en update()
+}
+uint16_t SlaveFSM::getApproachVelocity() const {
+    xSemaphoreTake(fsmMutex, pdMS_TO_TICKS(10));
+     uint16_t vel = approachVelocity;
+    xSemaphoreGive(fsmMutex);
+    return vel;  // Asumiendo que approachVelocity se actualiza en update()
 }
 
 bool SlaveFSM::isEmergency() const {

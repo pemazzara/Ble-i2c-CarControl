@@ -108,8 +108,6 @@ void BluetoothLeConnect::MyServerCallbacks::onDisconnect(NimBLEServer* pServer) 
 void BluetoothLeConnect::sendBLEPacket(MasterStatusPacket_t* packet) {
     if (deviceConnected) {
         bool hasSubscribers = pDataCharacteristic->getSubscribedCount() > 0;
-        Serial.printf("Enviando... Suscriptores: %d | Distancia: %d\n", hasSubscribers, packet->distance);
-        
         pDataCharacteristic->setValue((uint8_t*)packet, sizeof(MasterStatusPacket_t));
         pDataCharacteristic->notify(); 
     }
@@ -127,13 +125,5 @@ void BluetoothLeConnect::CommandCallbacks::onWrite(NimBLECharacteristic* pCharac
       Serial.printf("⚠️ Tamaño de comando inválido: recibido %d, esperado %d\n", 
                   value.length(), sizeof(BLECommand_t));
     } 
-    // Debug: mostrar comando recibido
-    Serial.printf("📥 BLE Rx - Comando estructurado recibido:\n");
-    Serial.printf("  Type: 0x%02X\n", bleConnect->lastCommand.type);
-    Serial.printf("  Speed: %d\n", bleConnect->lastCommand.speed);
-    Serial.printf("  Angle: %d°\n", bleConnect->lastCommand.angle);
-    Serial.printf("  TargetMode: %s\n", 
-                  bleConnect->lastCommand.targetMode == AUTOMATIC ? "AUTO" : "MANUAL");
-    Serial.printf("  Priority: %d\n", bleConnect->lastCommand.priority);
     
 }

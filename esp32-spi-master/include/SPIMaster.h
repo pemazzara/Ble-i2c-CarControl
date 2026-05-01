@@ -15,7 +15,6 @@
 #define SPI_MASTER_MOSI 41   
 #define SPI_MASTER_SS   42
 
-extern bool autonomousMode; // "Aviso" al compilador de que la variable vive en otro lugar
 extern uint16_t calcularChecksum(const void* data, size_t len);
 #define DISTANCIA_CRITICA_STOP 150 // 15cm o 150mm - Detener inmediatamente
 
@@ -27,6 +26,8 @@ public:
     bool sendCommandWithTimeout(const ControlCommand_t* cmd, uint32_t timeout_ms);
     bool sendCommand(const ControlCommand_t *cmd);
     int errorCounter = 0;
+    uint16_t currentLeftSpeed = 200;
+    uint16_t currentRightSpeed = 200;
     // Getters para estado del Slave
     SPIResponseFrame_t getLastResponse();
     bool isSlaveInEmergency();
@@ -37,7 +38,7 @@ public:
     // Utilidades
     void testCommunication();
     bool testSPI();
-    
+    bool performSpiExchange(const ControlCommand_t &cmd);
 private:
     ControlCommand_t last_drive_payload; // Para recordar qué enviamos
     bool initialized;
